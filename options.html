@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Gemini Alt Text Generator 設定</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            min-width: 300px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="text"] {
+            width: calc(100% - 22px); /* paddingとborderを考慮 */
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box; /* paddingとborderをwidthに含める */
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s ease;
+            display: block;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        #statusMessage {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 14px;
+            text-align: center;
+            display: none; /* 初期状態では非表示 */
+        }
+        #statusMessage.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        #statusMessage.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        p {
+            font-size: 14px;
+            line-height: 1.5;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        a {
+            color: #3498db;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Gemini Alt Text Generator 設定</h1>
+        <p>この拡張機能を使用するには、<a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>または<a href="https://cloud.google.com/vertex-ai" target="_blank">Google Cloud Vertex AI</a>で取得したGemini APIキーが必要です。</p>
+        <p>APIキーはあなたのブラウザに安全に保存され、画像のAltテキスト生成にのみ使用されます。</p>
+
+        <label for="geminiApiKey">Gemini API キー:</label>
+        <input type="text" id="geminiApiKey" placeholder="ここにAPIキーを入力してください">
+        <button id="saveButton">APIキーを保存</button>
+        <div id="statusMessage"></div>
+    </div>
+    <script src="options.js"></script>
+</body>
+</html>
