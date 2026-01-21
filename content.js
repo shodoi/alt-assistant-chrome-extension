@@ -16,10 +16,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         showInstructionDialog((userChoice) => sendResponse(userChoice));
         return true; // 非同期でsendResponseを呼び出すため
 
+      case "updateModelStatus":
+        const imageElementForStatus = findImageElement(message.imageUrl);
+        if (imageElementForStatus) {
+            showStatus(imageElementForStatus, message.statusText, "loading");
+        }
+        break;
+
       case "startAltTextGeneration":
+        // startAltTextGenerationは実質的にローディング開始の合図として使われるが、
+        // updateModelStatusがモデルごとの詳細を伝えるため、ここは初期表示のみ、あるいはupdateModelStatusに任せる。
+        // フォールバックロジックでは updateModelStatus が都度呼ばれるため、ここは控えめにするか、
+        // 最初の "開始" を示すために残すが、メッセージは updateModelStatus で上書きされる。
         const imageElementForLoading = findImageElement(message.imageUrl);
         if (imageElementForLoading && !document.getElementById('gemini-alt-dialog')) {
-            showStatus(imageElementForLoading, `${message.aiProvider || 'AI'}で生成中... (${message.modelLabel})`, "loading");
+            // ここでのメッセージは汎用的なものにしておく、すぐにupdateModelStatusが来るはず
+             showStatus(imageElementForLoading, `AIで生成を開始...`, "loading");
         }
         break;
   
@@ -100,12 +112,13 @@ function showInstructionDialog(onSubmit) {
 
     dialog.innerHTML = `
         <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 18px; color: #333;">Geminiで画像に指示</h3>
-        <p style="margin: 0 0 12px; font-size: 14px; color: #666;">画像に対する指示を入力し、使用するモデルを選択してください。</p>
+        <p style="margin: 0 0 12px; font-size: 14px; color: #666;">画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。</p>
         <textarea id="gemini-prompt-textarea" style="width: calc(100% - 20px); min-height: 100px; margin-bottom: 16px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; resize: vertical;">この画像の簡潔な代替テキスト（alt text）を日本語で生成してください。</textarea>
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
             <button id="cancel-instruction-dialog" style="padding: 10px 20px; border-radius: 6px; border: 1px solid #ccc; background-color: #f0f0f0; cursor: pointer; font-size: 14px;">キャンセル</button>
-            <button class="submit-model-button" data-model="gemini-2.5-flash" data-label="2.5 Flash" data-ai-provider="Gemini" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #007bff; color: white; cursor: pointer; font-size: 14px;">Gemini 2.5 Flash で生成</button>
-            <button class="submit-model-button" data-model="gemini-2.5-pro" data-label="2.5 Pro" data-ai-provider="Gemini" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #007bff; color: white; cursor: pointer; font-size: 14px;">Gemini 2.5 Pro で生成</button>
+            <button id="submit-auto-model" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #007bff; color: white; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+                <span>✨</span> 生成開始 (Auto)
+            </button>
         </div>
     `;
 
@@ -119,17 +132,15 @@ function showInstructionDialog(onSubmit) {
 
     document.getElementById('cancel-instruction-dialog').onclick = () => { onSubmit(null); closeDialog(); };
 
-    document.querySelectorAll('.submit-model-button').forEach(button => {
-        button.onclick = (e) => {
-            onSubmit({ 
-                prompt: textArea.value, 
-                model: e.target.dataset.model, 
-                modelLabel: e.target.dataset.label, 
-                aiProvider: e.target.dataset.aiProvider
-            });
-            closeDialog();
-        };
-    });
+    document.getElementById('submit-auto-model').onclick = () => {
+        onSubmit({ 
+            prompt: textArea.value, 
+            model: 'auto', 
+            modelLabel: 'Auto', 
+            aiProvider: 'Gemini'
+        });
+        closeDialog();
+    };
 }
 
 function showAltTextDialog(initialAltText, imageElement, modelLabel, targetElementId) {
@@ -322,20 +333,89 @@ function handleError(imageElement, message) {
   }
 }
 
+// 共通のスタイル定義を注入 (スピナー用)
+function injectStyles() {
+    if (document.getElementById('gemini-alt-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'gemini-alt-styles';
+    style.textContent = `
+        @keyframes gemini-spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .gemini-spinner {
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top: 2px solid #fff;
+            border-radius: 50%;
+            width: 14px;
+            height: 14px;
+            animation: gemini-spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+    `;
+    document.head.appendChild(style);
+}
+injectStyles();
+
+
 function showStatus(imageElement, message, type) {
     const existingStatus = imageElement.nextElementSibling;
     if (existingStatus && existingStatus.classList.contains('gemini-alt-status')) existingStatus.remove();
+    
     const statusDiv = document.createElement('div');
     statusDiv.classList.add('gemini-alt-status');
-    statusDiv.textContent = message;
-    Object.assign(statusDiv.style, { position: 'absolute', background: 'rgba(0, 0, 0, 0.7)', color: 'white', padding: '5px 10px', borderRadius: '5px', fontSize: '12px', zIndex: '99999', whiteSpace: 'nowrap', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis' });
-    if (type === 'loading') statusDiv.style.backgroundColor = 'rgba(0, 100, 200, 0.8)';
-    else if (type === 'rate-limit') { statusDiv.style.backgroundColor = 'rgba(255, 193, 7, 0.9)'; statusDiv.style.color = '#212529'; }
-    else if (type === 'error') statusDiv.style.backgroundColor = 'rgba(200, 0, 0, 0.8)';
+    
+    // スピナーを追加するためのHTML構築
+    let spinnerHtml = '';
+    if (type === 'loading') {
+        spinnerHtml = '<span class="gemini-spinner"></span>';
+    }
+    statusDiv.innerHTML = `${spinnerHtml}<span>${message}</span>`;
+    
+    Object.assign(statusDiv.style, { 
+        position: 'absolute', 
+        background: 'rgba(0, 0, 0, 0.7)', 
+        color: 'white', 
+        padding: '6px 12px', 
+        borderRadius: '20px', // 丸みを帯びさせる 
+        fontSize: '13px', 
+        zIndex: '99999', 
+        whiteSpace: 'nowrap', 
+        maxWidth: '350px', 
+        overflow: 'hidden', 
+        textOverflow: 'ellipsis',
+        display: 'flex',
+        alignItems: 'center',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+    });
+
+    if (type === 'loading') statusDiv.style.backgroundColor = 'rgba(0, 100, 200, 0.9)';
+    else if (type === 'rate-limit') { statusDiv.style.backgroundColor = 'rgba(255, 193, 7, 0.95)'; statusDiv.style.color = '#212529'; }
+    else if (type === 'error') statusDiv.style.backgroundColor = 'rgba(220, 53, 69, 0.9)';
+    
     imageElement.parentNode.insertBefore(statusDiv, imageElement.nextSibling);
+    
     const imgRect = imageElement.getBoundingClientRect();
-    statusDiv.style.top = `${imgRect.top + window.scrollY - statusDiv.offsetHeight - 5}px`;
+    // 画像の上に少し被るか、すぐ下など、位置調整（ここでは画像の左上付近にオーバーレイ気味に表示するパターンに変更してみる、あるいは元の位置）
+    // 元のロジック: 画像のすぐ上（外部）
+    statusDiv.style.top = `${imgRect.top + window.scrollY + 10}px`; // 画像内部左上に表示変更（オーバーレイの方が見やすいことが多い）
+    statusDiv.style.left = `${imgRect.left + window.scrollX + 10}px`;
+    
+    // 位置が画像外にはみ出る場合の調整（簡易）
+    // とりあえず元の下側配置に戻す（ユーザーがその方が良いかもしれないので）、ただし少しマージン調整
+    // statusDiv.style.top = `${imgRect.top + window.scrollY - statusDiv.offsetHeight - 5}px`; // Original
+    
+    // 下側にオーバーレイ
+    // statusDiv.style.top = `${imgRect.bottom + window.scrollY - statusDiv.offsetHeight - 10}px`;
+    // statusDiv.style.left = `${imgRect.left + window.scrollX + 10}px`;
+
+    // 以前の実装(画像の上側外)に戻しつつ、位置計算を確実にする
+    statusDiv.style.top = `${imgRect.top + window.scrollY - 40}px`; 
     statusDiv.style.left = `${imgRect.left + window.scrollX}px`;
+
+
     if (type === 'error' || type === 'rate-limit') setTimeout(() => { if (statusDiv.parentNode) statusDiv.remove(); }, 8000);
 }
 

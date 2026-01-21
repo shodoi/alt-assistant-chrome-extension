@@ -1,5 +1,13 @@
 // background.js
 
+// ユーザーが希望したモデルの優先順位リスト
+const MODEL_PRIORITY_LIST = [
+    { id: 'gemini-3-pro-preview', label: '3.0 Pro Preview' },
+    { id: 'gemini-3-flash-preview', label: '3.0 Flash Preview' },
+    { id: 'gemini-2.5-pro', label: '2.5 Pro' },
+    { id: 'gemini-2.5-flash', label: '2.5 Flash' }
+];
+
 /**
  * Altテキスト生成の全プロセスを開始するメイン関数。
  * @param {string} imageUrl - 対象の画像URL
@@ -22,42 +30,112 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
             }, { frameId: frameId });
             if (userChoice) {
                 finalPrompt = userChoice.prompt;
+                // モデル選択は 'auto' が返ってくるが、再生成時などに備えて保持する構造は維持
             }
         } else {
             // 再生成時 (文脈あり)
-            const { lastModel, lastModelLabel, lastAiProvider } = await chrome.storage.local.get(['lastModel', 'lastModelLabel', 'lastAiProvider']);
             finalPrompt = createRegenerationPrompt(context); // 文脈からプロンプトを生成
             userChoice = { 
-                model: lastModel, 
-                modelLabel: lastModelLabel, 
-                aiProvider: lastAiProvider,
                 prompt: finalPrompt, // 生成したプロンプトをセット
-                isRegeneration: true
+                isRegeneration: true,
+                model: 'auto' // 再生成時もオートで良い
             };
         }
 
-        if (userChoice && userChoice.model && userChoice.prompt) {
-            const { model, modelLabel, aiProvider } = userChoice;
-
-            await chrome.storage.local.set({ lastModel: model, lastModelLabel: modelLabel, lastAiProvider: aiProvider });
-
+        if (userChoice && finalPrompt) {
+            // フォールバックロジックを使って生成開始
+            // UIには「生成開始」をまず伝える（詳細なモデル名はフォールバック関数内で都度通知）
             chrome.tabs.sendMessage(tabId, { 
-                action: "startAltTextGeneration", imageUrl, targetElementId, frameId, model, modelLabel, aiProvider 
+                action: "startAltTextGeneration", imageUrl, targetElementId, frameId 
             }, { frameId });
 
-            const altText = await generateAltTextWithGemini(imageUrl, model, finalPrompt);
+            const result = await generateAltTextWithFallback(imageUrl, finalPrompt, tabId, frameId);
+            
+            if (result.success) {
+                // 成功したモデル情報を保存（次回の参考に使えるかもしれないが、現状は常に上位から試す）
+                await chrome.storage.local.set({ 
+                    lastModel: result.modelId, 
+                    lastModelLabel: result.modelLabel, 
+                    lastAiProvider: 'Gemini' 
+                });
 
-            chrome.tabs.sendMessage(tabId, { 
-                action: "updateAltText", imageUrl, altText, targetElementId, frameId, model, modelLabel, aiProvider 
-            }, { frameId });
+                chrome.tabs.sendMessage(tabId, { 
+                    action: "updateAltText", 
+                    imageUrl, 
+                    altText: result.altText, 
+                    targetElementId, 
+                    frameId, 
+                    model: result.modelId, 
+                    modelLabel: result.modelLabel, 
+                    aiProvider: 'Gemini' 
+                }, { frameId });
+            } else {
+                throw new Error(result.errorMessage || "全てのモデルで生成に失敗しました。");
+            }
         }
     } catch (error) {
         console.error("生成プロセスでエラーが発生しました:", error);
-        const { lastAiProvider } = await chrome.storage.local.get(['lastAiProvider']);
         chrome.tabs.sendMessage(tabId, { 
-            action: "errorAltTextGeneration", imageUrl, errorMessage: error.message, targetElementId, frameId, aiProvider: lastAiProvider
+            action: "errorAltTextGeneration", imageUrl, errorMessage: error.message, targetElementId, frameId, aiProvider: 'Gemini'
         }, { frameId });
     }
+}
+
+/**
+ * フォールバック機能付きでAltテキストを生成する
+ */
+async function generateAltTextWithFallback(imageUrl, promptText, tabId, frameId) {
+    let lastError = null;
+
+    for (const modelInfo of MODEL_PRIORITY_LIST) {
+        try {
+            // UIに「〇〇モデルで生成中...」と通知
+            chrome.tabs.sendMessage(tabId, { 
+                action: "updateModelStatus", 
+                imageUrl, 
+                statusText: `Gemini ${modelInfo.label} で生成中...` 
+            }, { frameId }).catch(() => {}); // タブが閉じている場合などのエラーは無視
+
+            // 生成試行
+            console.log(`Attempting generation with ${modelInfo.id}...`);
+            const altText = await generateAltTextWithGemini(imageUrl, modelInfo.id, promptText);
+            
+            // 成功したらリターン
+            return {
+                success: true,
+                altText: altText,
+                modelId: modelInfo.id,
+                modelLabel: modelInfo.label
+            };
+
+        } catch (error) {
+            console.warn(`Failed with ${modelInfo.id}:`, error);
+            lastError = error;
+
+            // エラーの種類を確認
+            const isRateLimit = error.message.includes('429') || error.message.includes('rate limit') || error.message.includes('quota') || error.message.includes('Resource has been exhausted');
+            const isModelNotFound = error.message.includes('404') || error.message.includes('not found') || error.message.includes('Publisher Model'); // モデル名間違いなども含む
+            const isServerOverload = error.message.includes('503') || error.message.includes('500') || error.message.includes('Overloaded');
+
+            // APIキーエラーなど、明らかに回復不能な致命的エラーの場合は即座にループを抜けるべきだが、
+            // ここでは「403」なども含めて、基本的には次のモデルを試す戦略をとる（キーが正しければモデル権限の問題かもしれないため）。
+            // ただし、もし全てのモデルでダメならループ終了後にエラーを投げる。
+            
+            // 明示的に中断すべきエラー: APIキー未設定（generateAltTextWithGemini内でチェック済みだが念のため）
+            if (error.message.includes("APIキーが設定されていません")) {
+                throw error;
+            }
+
+            // 次のモデルへ進む前に少し待機しても良いが、UX優先で進む
+            continue; 
+        }
+    }
+
+    // 全てのモデルで失敗した場合
+    return {
+        success: false,
+        errorMessage: lastError ? lastError.message : "不明なエラーにより生成できませんでした。"
+    };
 }
 
 /**
@@ -157,6 +235,7 @@ async function generateAltTextWithGemini(imageUrl, model, promptText) {
 
                     if (!apiResponse.ok) {
                         const errorData = await apiResponse.json();
+                        // エラーメッセージを詳細に含める
                         throw new Error(errorData.error?.message || apiResponse.statusText);
                     }
 
