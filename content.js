@@ -290,10 +290,22 @@ function addMessageToChat(text, sender) {
         
         copyButton.onclick = (e) => {
             e.stopPropagation();
-            navigator.clipboard.writeText(textArea.value).then(() => {
-                copyButton.textContent = '✓';
-                setTimeout(() => { copyButton.textContent = '📋'; }, 1500);
-            });
+            const textToCopy = textArea.value;
+            
+            // Clipboard APIが利用可能かチェック
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                // モダンなClipboard API
+                navigator.clipboard.writeText(textToCopy).then(() => {
+                    copyButton.textContent = '✓';
+                    setTimeout(() => { copyButton.textContent = '📋'; }, 1500);
+                }).catch(() => {
+                    // Clipboard APIが失敗した場合のフォールバック
+                    fallbackCopyTextToClipboard(textToCopy, copyButton);
+                });
+            } else {
+                // Clipboard APIが利用できない場合のフォールバック
+                fallbackCopyTextToClipboard(textToCopy, copyButton);
+            }
         };
         
         wrapper.appendChild(copyButton);
@@ -306,6 +318,41 @@ function addMessageToChat(text, sender) {
     chatHistory.appendChild(wrapper);
 
     chatHistory.scrollTop = chatHistory.scrollHeight;
+}
+
+/**
+ * Clipboard APIが利用できない環境でのフォールバック処理
+ * document.execCommand('copy')を使用
+ * @param {string} text - コピーするテキスト
+ * @param {HTMLElement} buttonElement - コピーボタン要素
+ */
+function fallbackCopyTextToClipboard(text, buttonElement) {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    textArea.style.top = '0';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    
+    try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+            buttonElement.textContent = '✓';
+            setTimeout(() => { buttonElement.textContent = '📋'; }, 1500);
+        } else {
+            console.error('フォールバックコピーに失敗しました');
+            buttonElement.textContent = '✗';
+            setTimeout(() => { buttonElement.textContent = '📋'; }, 1500);
+        }
+    } catch (err) {
+        console.error('コピー処理でエラーが発生しました:', err);
+        buttonElement.textContent = '✗';
+        setTimeout(() => { buttonElement.textContent = '📋'; }, 1500);
+    } finally {
+        document.body.removeChild(textArea);
+    }
 }
 
 function toggleDialogInputs(dialog, enabled) {
