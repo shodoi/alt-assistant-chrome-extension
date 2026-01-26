@@ -23,7 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
           showStatus('APIキーが保存されました！', 'success');
         });
       } else {
-        showStatus('APIキーを入力してください。', 'error');
+        showStatus('APIキーを入力してください。<a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" style="color: #721c24; text-decoration: underline;">APIキーの取得方法</a>', 'error');
       }
     });
   
@@ -33,7 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
      * @param {string} type - 'success' または 'error'
      */
     function showStatus(message, type) {
-      statusMessage.textContent = message;
+      statusMessage.innerHTML = message;
       statusMessage.className = ''; // クラスをリセット
       statusMessage.classList.add(type);
       statusMessage.style.display = 'block'; // 表示

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
     <meta charset="utf-8">
     <title>Gemini Alt Text Generator 設定</title>
@@ -54,6 +54,10 @@
         button:hover {
             background-color: #2980b9;
         }
+        button:focus-visible {
+            outline: 2px solid #2c3e50;
+            outline-offset: 2px;
+        }
         #statusMessage {
             margin-top: 15px;
             padding: 10px;
@@ -90,14 +94,14 @@
 <body>
     <div class="container">
         <h1>Gemini Alt Text Generator 設定</h1>
-        <p>この拡張機能を使用するには、<a href="https://aistudio.google.com/" target="_blank">Google AI Studio</a>または<a href="https://cloud.google.com/vertex-ai" target="_blank">Google Cloud Vertex AI</a>で取得したGemini APIキーが必要です。</p>
+        <p>この拡張機能を使用するには、<a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer">Google AI Studio</a>または<a href="https://cloud.google.com/vertex-ai" target="_blank" rel="noopener noreferrer">Google Cloud Vertex AI</a>で取得したGemini APIキーが必要です。</p>
         <p>APIキーはあなたのブラウザに安全に保存され、画像のAltテキスト生成にのみ使用されます。</p>
 
         <label for="geminiApiKey">Gemini API キー:</label>
-        <input type="text" id="geminiApiKey" placeholder="ここにAPIキーを入力してください">
+        <input type="text" id="geminiApiKey" placeholder="ここにAPIキーを入力してください…" autocomplete="off">
         <button id="saveButton">APIキーを保存</button>
         <div id="statusMessage"></div>
     </div>
-    <script src="options.js"></script>
+    <script src="options.js" defer></script>
 </body>
 </html>

@@ -113,10 +113,10 @@ function showInstructionDialog(onSubmit) {
     dialog.innerHTML = `
         <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 18px; color: #333;">Geminiで画像に指示</h3>
         <p style="margin: 0 0 12px; font-size: 14px; color: #666;">画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。</p>
-        <textarea id="gemini-prompt-textarea" style="width: calc(100% - 20px); min-height: 100px; margin-bottom: 16px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; resize: vertical;">この画像の簡潔な代替テキスト（alt text）を日本語で生成してください。</textarea>
+        <textarea id="gemini-prompt-textarea" style="width: calc(100% - 20px); min-height: 100px; margin-bottom: 16px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; resize: vertical;" autocomplete="off">この画像の簡潔な代替テキスト（alt text）を日本語で生成してください。</textarea>
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
-            <button id="cancel-instruction-dialog" style="padding: 10px 20px; border-radius: 6px; border: 1px solid #ccc; background-color: #f0f0f0; cursor: pointer; font-size: 14px;">キャンセル</button>
-            <button id="submit-auto-model" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #007bff; color: white; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+            <button id="cancel-instruction-dialog" style="padding: 10px 20px; border-radius: 6px; border: 1px solid #ccc; background-color: #f0f0f0; cursor: pointer; font-size: 14px; transition: background-color 0.2s ease;">キャンセル</button>
+            <button id="submit-auto-model" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #007bff; color: white; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px; transition: background-color 0.2s ease;">
                 <span>✨</span> 生成開始 (Auto)
             </button>
         </div>
@@ -130,9 +130,26 @@ function showInstructionDialog(onSubmit) {
 
     const closeDialog = () => dialog.remove();
 
-    document.getElementById('cancel-instruction-dialog').onclick = () => { onSubmit(null); closeDialog(); };
+    const cancelButton = document.getElementById('cancel-instruction-dialog');
+    const submitButton = document.getElementById('submit-auto-model');
+    
+    // フォーカス時のスタイル設定
+    [cancelButton, submitButton].forEach(btn => {
+        btn.addEventListener('focus', (e) => {
+            if (e.target.matches(':focus-visible')) {
+                btn.style.outline = '2px solid #007bff';
+                btn.style.outlineOffset = '2px';
+            }
+        });
+        btn.addEventListener('blur', () => {
+            btn.style.outline = '';
+            btn.style.outlineOffset = '';
+        });
+    });
 
-    document.getElementById('submit-auto-model').onclick = () => {
+    cancelButton.onclick = () => { onSubmit(null); closeDialog(); };
+
+    submitButton.onclick = () => {
         onSubmit({ 
             prompt: textArea.value, 
             model: 'auto', 
@@ -172,17 +189,20 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
   const instructionInput = document.createElement('input');
   instructionInput.id = 'gemini-instruction-input';
   instructionInput.type = 'text';
-  instructionInput.placeholder = '追加の指示や修正を入力...';
+  instructionInput.placeholder = '追加の指示や修正を入力…';
+  instructionInput.setAttribute('autocomplete', 'off');
   Object.assign(instructionInput.style, { width: 'calc(100% - 14px)', padding: '10px', border: '1px solid #ccc', borderRadius: '6px', marginBottom: '12px' });
   
   const buttonContainer = document.createElement('div');
   Object.assign(buttonContainer.style, { display: 'flex', justifyContent: 'flex-end', gap: '10px' });
-  const buttonStyle = { padding: '9px 18px', border: '1px solid #ccc', borderRadius: '6px', cursor: 'pointer', backgroundColor: '#f0f0f0', fontSize: '14px', fontWeight: '500' };
+  const buttonStyle = { padding: '9px 18px', border: '1px solid #ccc', borderRadius: '6px', cursor: 'pointer', backgroundColor: '#f0f0f0', fontSize: '14px', fontWeight: '500', transition: 'background-color 0.2s ease, box-shadow 0.2s ease' };
 
   const cancelButton = document.createElement('button');
   cancelButton.textContent = '閉じる';
   Object.assign(cancelButton.style, buttonStyle);
   cancelButton.onclick = () => dialog.remove();
+  cancelButton.addEventListener('focus', () => { cancelButton.style.outline = '2px solid #007bff'; cancelButton.style.outlineOffset = '2px'; });
+  cancelButton.addEventListener('blur', () => { cancelButton.style.outline = ''; cancelButton.style.outlineOffset = ''; });
 
   const startOverButton = document.createElement('button');
   startOverButton.textContent = 'やり直し';
@@ -191,10 +211,14 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
       dialog.remove();
       chrome.runtime.sendMessage({ action: 'start_over', imageUrl: imageElement.src, targetElementId });
   };
+  startOverButton.addEventListener('focus', () => { startOverButton.style.outline = '2px solid #007bff'; startOverButton.style.outlineOffset = '2px'; });
+  startOverButton.addEventListener('blur', () => { startOverButton.style.outline = ''; startOverButton.style.outlineOffset = ''; });
 
   const modifyButton = document.createElement('button');
   modifyButton.textContent = '送信';
   Object.assign(modifyButton.style, buttonStyle, { backgroundColor: '#ffc107', color: '#212529', border: 'none' });
+  modifyButton.addEventListener('focus', () => { modifyButton.style.outline = '2px solid #ffc107'; modifyButton.style.outlineOffset = '2px'; });
+  modifyButton.addEventListener('blur', () => { modifyButton.style.outline = ''; modifyButton.style.outlineOffset = ''; });
   modifyButton.onclick = () => {
       const instruction = instructionInput.value.trim();
       if (!instruction) return;
@@ -212,7 +236,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
       }).join('\n');
 
       addMessageToChat(instruction, 'user');
-      addMessageToChat('生成中...', 'loading');
+      addMessageToChat('生成中…', 'loading');
       toggleDialogInputs(dialog, false);
 
       // DEBUG: 送信する履歴をコンソールに出力
@@ -280,12 +304,14 @@ function addMessageToChat(text, sender) {
 
         const copyButton = document.createElement('button');
         copyButton.textContent = '📋';
+        copyButton.setAttribute('aria-label', 'テキストをコピー');
         Object.assign(copyButton.style, {
             background: '#fff', border: '1px solid #ccc', borderRadius: '50%',
             width: '28px', height: '28px', cursor: 'pointer',
             position: 'absolute', right: '-12px', top: '50%',
             transform: 'translateY(-50%)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', padding: '0'
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', padding: '0',
+            transition: 'background-color 0.2s ease, box-shadow 0.2s ease'
         });
         
         copyButton.onclick = (e) => {
@@ -307,6 +333,23 @@ function addMessageToChat(text, sender) {
                 fallbackCopyTextToClipboard(textToCopy, copyButton);
             }
         };
+        
+        copyButton.addEventListener('focus', () => {
+            copyButton.style.outline = '2px solid #007bff';
+            copyButton.style.outlineOffset = '2px';
+        });
+        copyButton.addEventListener('blur', () => {
+            copyButton.style.outline = '';
+            copyButton.style.outlineOffset = '';
+        });
+        copyButton.addEventListener('mouseenter', () => {
+            copyButton.style.backgroundColor = '#f0f0f0';
+            copyButton.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+        });
+        copyButton.addEventListener('mouseleave', () => {
+            copyButton.style.backgroundColor = '#fff';
+            copyButton.style.boxShadow = '';
+        });
         
         wrapper.appendChild(copyButton);
 
