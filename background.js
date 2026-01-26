@@ -166,14 +166,42 @@ Output in Japanese.
 
 // --- イベントリスナー --- //
 
+/**
+ * APIキーの有無に応じてコンテキストメニューの状態を更新します。
+ */
+async function updateContextMenuState() {
+    const { geminiApiKey } = await chrome.storage.sync.get('geminiApiKey');
+    const hasValidKey = !!geminiApiKey;
+    
+    chrome.contextMenus.update("instructWithGemini", {
+        enabled: hasValidKey,
+        title: hasValidKey ? "Geminiで画像に指示" : "⚠️ APIキーを設定してください"
+    });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.removeAll(() => {
       chrome.contextMenus.create({
         id: "instructWithGemini",
         title: "Geminiで画像に指示",
         contexts: ["image"]
+      }, () => {
+        // メニュー作成後にAPIキー状態をチェックして更新
+        updateContextMenuState();
       });
     });
+});
+
+// 拡張機能起動時（ブラウザ再起動後など）にもAPIキー状態をチェック
+chrome.runtime.onStartup.addListener(() => {
+    updateContextMenuState();
+});
+
+// APIキーが変更されたらコンテキストメニューの状態を更新
+chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'sync' && changes.geminiApiKey) {
+        updateContextMenuState();
+    }
 });
   
 chrome.contextMenus.onClicked.addListener((info, tab) => {
