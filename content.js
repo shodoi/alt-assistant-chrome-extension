@@ -170,11 +170,12 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
       position: 'fixed', top: '20px', left: '20px', zIndex: '10000',
       backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '12px',
       boxShadow: '0 8px 25px rgba(0,0,0,0.2)', width: '550px', display: 'flex',
-      flexDirection: 'column', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+      flexDirection: 'column', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      maxHeight: '90vh', overflowY: 'auto'
   });
 
   const header = document.createElement('div');
-  Object.assign(header.style, { padding: '12px 20px', borderBottom: '1px solid #eee' });
+  Object.assign(header.style, { padding: '12px 20px', borderBottom: '1px solid #eee', flexShrink: '0' });
   const title = document.createElement('h3');
   title.textContent = 'Altテキスト生成チャット' + (modelLabel ? ` (${modelLabel})` : '');
   Object.assign(title.style, { margin: '0', fontSize: '16px', color: '#222', fontWeight: '600' });
@@ -182,10 +183,10 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
 
   const chatHistory = document.createElement('div');
   chatHistory.id = 'gemini-chat-history';
-  Object.assign(chatHistory.style, { height: '350px', overflowY: 'auto', padding: '15px 20px', flexGrow: '1', background: '#fff' });
+  Object.assign(chatHistory.style, { overflow: 'visible', padding: '15px 20px', flexGrow: '1', background: '#fff' });
 
   const inputArea = document.createElement('div');
-  Object.assign(inputArea.style, { padding: '15px 20px', borderTop: '1px solid #eee', background: '#f9f9f9' });
+  Object.assign(inputArea.style, { padding: '15px 20px', borderTop: '1px solid #eee', background: '#f9f9f9', flexShrink: '0' });
   const instructionInput = document.createElement('input');
   instructionInput.id = 'gemini-instruction-input';
   instructionInput.type = 'text';
@@ -294,11 +295,22 @@ function addMessageToChat(text, sender) {
     if (sender === 'ai') {
         const textArea = document.createElement('textarea');
         Object.assign(textArea.style, {
-            width: 'calc(100% - 12px)', minHeight: '100px', padding: '6px',
+            width: 'calc(100% - 12px)', minHeight: '80px', padding: '6px',
             border: '1px solid #ddd', borderRadius: '6px', resize: 'vertical', 
-            background: '#fff', color: '#000', margin: '0'
+            background: '#fff', color: '#000', margin: '0',
+            overflow: 'hidden', boxSizing: 'border-box'
         });
         textArea.value = text;
+        
+        // textareaの高さをコンテンツに応じて自動調整
+        const autoResize = () => {
+            textArea.style.height = 'auto';
+            const newHeight = Math.max(80, textArea.scrollHeight);
+            textArea.style.height = newHeight + 'px';
+        };
+        
+        // inputイベント時に高さを調整
+        textArea.addEventListener('input', autoResize);
         
         bubble.appendChild(textArea);
 
@@ -361,6 +373,18 @@ function addMessageToChat(text, sender) {
     chatHistory.appendChild(wrapper);
 
     chatHistory.scrollTop = chatHistory.scrollHeight;
+    
+    // AIメッセージの場合、DOMに追加された後にtextareaの高さを調整
+    if (sender === 'ai') {
+        setTimeout(() => {
+            const textArea = bubble.querySelector('textarea');
+            if (textArea) {
+                textArea.style.height = 'auto';
+                const newHeight = Math.max(80, textArea.scrollHeight);
+                textArea.style.height = newHeight + 'px';
+            }
+        }, 0);
+    }
 }
 
 /**
