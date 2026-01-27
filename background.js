@@ -109,24 +109,31 @@ async function generateAltTextWithFallback(imageUrl, promptText, tabId, frameId)
             };
 
         } catch (error) {
-            console.warn(`Failed with ${modelInfo.id}:`, error);
             lastError = error;
 
             // エラーの種類を確認
             const isRateLimit = error.message.includes('429') || error.message.includes('rate limit') || error.message.includes('quota') || error.message.includes('Resource has been exhausted');
-            const isModelNotFound = error.message.includes('404') || error.message.includes('not found') || error.message.includes('Publisher Model'); // モデル名間違いなども含む
-            const isServerOverload = error.message.includes('503') || error.message.includes('500') || error.message.includes('Overloaded');
+            const isModelNotFound = error.message.includes('404') || error.message.includes('not found') || error.message.includes('Publisher Model');
+            const isServerOverload = error.message.includes('503') || error.message.includes('500') || error.message.includes('Overloaded') || error.message.includes('overloaded');
 
-            // APIキーエラーなど、明らかに回復不能な致命的エラーの場合は即座にループを抜けるべきだが、
-            // ここでは「403」なども含めて、基本的には次のモデルを試す戦略をとる（キーが正しければモデル権限の問題かもしれないため）。
-            // ただし、もし全てのモデルでダメならループ終了後にエラーを投げる。
+            // レートリミットやサーバー過負荷は想定内のエラーなので簡潔なログのみ
+            if (isRateLimit) {
+                console.log(`${modelInfo.id}: レートリミット到達、次のモデルへ`);
+            } else if (isServerOverload) {
+                console.log(`${modelInfo.id}: サーバー過負荷、次のモデルへ`);
+            } else if (isModelNotFound) {
+                console.warn(`${modelInfo.id}: モデルが見つかりません`);
+            } else {
+                // その他の予期しないエラーは詳細ログを出力
+                console.warn(`${modelInfo.id} でエラー:`, error);
+            }
             
-            // 明示的に中断すべきエラー: APIキー未設定（generateAltTextWithGemini内でチェック済みだが念のため）
+            // APIキー未設定など、即座に中断すべき致命的エラー
             if (error.message.includes("APIキーが設定されていません")) {
                 throw error;
             }
 
-            // 次のモデルへ進む前に少し待機しても良いが、UX優先で進む
+            // 次のモデルへ進む
             continue; 
         }
     }
