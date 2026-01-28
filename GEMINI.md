@@ -28,3 +28,7 @@ To acquire a Gemini API key, visit https://aistudio.google.com/ and create a new
 *   The user interface is created dynamically using JavaScript and injected into the web page.
 *   The Gemini API is called from the background script to avoid exposing the API key in the content script.
 *   The code is written in JavaScript with JSDoc comments.
+
+# AI Instructions
+
+- **Critical Requirement (Top Priority)**: `walkthrough.md` MUST be written entirely in Japanese. Writing this file in English is strictly prohibited.
