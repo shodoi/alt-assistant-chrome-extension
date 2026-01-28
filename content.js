@@ -1,5 +1,146 @@
 // content.js
 
+// --- ダークモード対応CSSスタイルシートの追加 ---
+(function() {
+    if (document.getElementById('gemini-dark-mode-styles')) return;
+    
+    const style = document.createElement('style');
+    style.id = 'gemini-dark-mode-styles';
+    style.textContent = `
+        /* ライトモード（デフォルト） */
+        .gemini-dialog {
+            background-color: #fff;
+            border-color: #ccc;
+            color: #333;
+        }
+        
+        .gemini-dialog-header {
+            border-bottom-color: #eee;
+            background-color: #f9f9f9;
+        }
+        
+        .gemini-dialog-title {
+            color: #222;
+        }
+        
+        .gemini-dialog-description {
+            color: #666;
+        }
+        
+        .gemini-dialog-textarea {
+            background-color: #fff;
+            border-color: #ddd;
+            color: #333;
+        }
+        
+        .gemini-chat-bg {
+            background-color: #f5f5f5;
+        }
+        
+        .gemini-input-area {
+            background-color: #f9f9f9;
+            border-top-color: #eee;
+        }
+        
+        .gemini-input-field {
+            background-color: #fff;
+            border-color: #ddd;
+            color: #333;
+        }
+        
+        .gemini-btn-cancel {
+            background-color: #f0f0f0;
+            border-color: #ccc;
+            color: #333;
+        }
+        
+        .gemini-close-btn {
+            color: #666;
+        }
+        
+        .gemini-close-btn:hover {
+            color: #000;
+        }
+        
+        /* ダークモード */
+        @media (prefers-color-scheme: dark) {
+            .gemini-dialog {
+                background-color: #2b2b2b;
+                border-color: #444;
+                color: #e0e0e0;
+            }
+            
+            .gemini-dialog-header {
+                border-bottom-color: #444;
+                background-color: #333;
+            }
+            
+            .gemini-dialog-title {
+                color: #f0f0f0;
+            }
+            
+            .gemini-dialog-description {
+                color: #b0b0b0;
+            }
+            
+            .gemini-dialog-textarea {
+                background-color: #1e1e1e;
+                border-color: #555;
+                color: #e0e0e0;
+            }
+            
+            .gemini-chat-bg {
+                background-color: #1e1e1e;
+            }
+            
+            .gemini-input-area {
+                background-color: #2b2b2b;
+                border-top-color: #444;
+            }
+            
+            .gemini-input-field {
+                background-color: #3a3a3a;
+                border-color: #555;
+                color: #e0e0e0;
+            }
+            
+            .gemini-input-field::placeholder {
+                color: #888;
+            }
+            
+            .gemini-btn-cancel {
+                background-color: #3a3a3a;
+                border-color: #555;
+                color: #e0e0e0;
+            }
+            
+            .gemini-btn-cancel:hover {
+                background-color: #4a4a4a;
+            }
+            
+            .gemini-close-btn {
+                color: #b0b0b0;
+            }
+            
+            .gemini-close-btn:hover {
+                color: #fff;
+            }
+            
+            /* AIメッセージバブルをダークモード対応 */
+            .chat-bubble-ai {
+                background-color: #333 !important;
+                border-color: #555 !important;
+                color: #e0e0e0 !important;
+            }
+            
+            .chat-bubble-ai textarea {
+                color: #e0e0e0 !important;
+            }
+        }
+    `;
+    document.head.appendChild(style);
+})();
+
 // --- グローバル変数 ---
 let lastRightClickedElement = null;
 
@@ -104,6 +245,7 @@ function showInstructionDialog(onSubmit) {
 
     const dialog = document.createElement('div');
     dialog.id = 'gemini-instruction-dialog';
+    dialog.className = 'gemini-dialog';
 
     Object.assign(dialog.style, {
         position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
@@ -113,11 +255,11 @@ function showInstructionDialog(onSubmit) {
     });
 
     dialog.innerHTML = `
-        <h3 style="margin-top: 0; margin-bottom: 16px; font-size: 18px; color: #333;">Geminiで画像に指示</h3>
-        <p style="margin: 0 0 12px; font-size: 14px; color: #666;">画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。</p>
-        <textarea id="gemini-prompt-textarea" style="width: calc(100% - 20px); min-height: 100px; margin-bottom: 16px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; resize: vertical;" autocomplete="off">この画像の簡潔な代替テキスト（alt text）を日本語で生成してください。</textarea>
+        <h3 class="gemini-dialog-title" style="margin-top: 0; margin-bottom: 16px; font-size: 18px;">Geminiで画像に指示</h3>
+        <p class="gemini-dialog-description" style="margin: 0 0 12px; font-size: 14px;">画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。</p>
+        <textarea id="gemini-prompt-textarea" class="gemini-dialog-textarea" style="width: calc(100% - 20px); min-height: 100px; margin-bottom: 16px; padding: 8px; border: 1px solid; border-radius: 4px; font-size: 14px; resize: vertical;" autocomplete="off">この画像の代替テキストを簡潔に日本語で生成してください。</textarea>
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
-            <button id="cancel-instruction-dialog" style="padding: 10px 20px; border-radius: 6px; border: 1px solid #ccc; background-color: #f0f0f0; cursor: pointer; font-size: 14px; transition: background-color 0.2s ease;">キャンセル</button>
+            <button id="cancel-instruction-dialog" class="gemini-btn-cancel" style="padding: 10px 20px; border-radius: 6px; border: 1px solid; cursor: pointer; font-size: 14px; transition: background-color 0.2s ease;">キャンセル</button>
             <button id="submit-auto-model" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #007bff; color: white; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px; transition: background-color 0.2s ease;">
                 <span>✨</span> 生成開始 (Auto)
             </button>
@@ -168,6 +310,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
 
     const dialog = document.createElement('div');
     dialog.id = 'gemini-alt-dialog';
+    dialog.className = 'gemini-dialog';
     Object.assign(dialog.style, {
         position: 'fixed', top: '20px', left: '20px', zIndex: '10000',
         backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '12px',
@@ -177,6 +320,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     });
 
     const header = document.createElement('div');
+    header.className = 'gemini-dialog-header';
     Object.assign(header.style, {
         padding: '12px 20px',
         borderBottom: '1px solid #eee',
@@ -187,6 +331,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     });
 
     const title = document.createElement('h3');
+    title.className = 'gemini-dialog-title';
     title.textContent = 'Altテキスト生成チャット' + (modelLabel ? ` (${modelLabel})` : '');
     Object.assign(title.style, { margin: '0', fontSize: '16px', color: '#222', fontWeight: '600' });
     header.appendChild(title);
@@ -200,15 +345,16 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
         marginLeft: '10px'
     });
     closeButton.onclick = () => dialog.remove();
-    closeButton.addEventListener('mouseenter', () => closeButton.style.color = '#000');
-    closeButton.addEventListener('mouseleave', () => closeButton.style.color = '#666');
+    // ホバー効果はCSSで制御されるため、イベントリスナーは削除
     header.appendChild(closeButton);
 
     const chatHistory = document.createElement('div');
     chatHistory.id = 'gemini-chat-history';
+    chatHistory.className = 'gemini-chat-bg';
     Object.assign(chatHistory.style, { overflow: 'visible', padding: '15px 20px', flexGrow: '1', background: '#f5f5f5' });
 
     const inputArea = document.createElement('div');
+    inputArea.className = 'gemini-input-area';
     Object.assign(inputArea.style, {
         padding: '15px 20px',
         borderTop: '1px solid #eee',
@@ -221,6 +367,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
 
     const instructionInput = document.createElement('input');
     instructionInput.id = 'gemini-instruction-input';
+    instructionInput.className = 'gemini-input-field';
     instructionInput.type = 'text';
     instructionInput.placeholder = '追加の指示や修正を入力…';
     instructionInput.setAttribute('autocomplete', 'off');
