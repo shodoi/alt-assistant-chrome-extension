@@ -68,7 +68,11 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
                     model: result.modelId, 
                     modelLabel: result.modelLabel, 
                     aiProvider: 'Gemini' 
-                }, { frameId });
+                }, { frameId }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        console.warn('メッセージ送信エラー（タブが閉じられた可能性があります）:', chrome.runtime.lastError.message);
+                    }
+                });
             } else {
                 throw new Error(result.errorMessage || "全てのモデルで生成に失敗しました。");
             }
@@ -77,7 +81,11 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
         console.error("生成プロセスでエラーが発生しました:", error);
         chrome.tabs.sendMessage(tabId, { 
             action: "errorAltTextGeneration", imageUrl, errorMessage: error.message, targetElementId, frameId, aiProvider: 'Gemini'
-        }, { frameId });
+        }, { frameId }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.warn('エラーメッセージ送信失敗（タブが閉じられた可能性があります）:', chrome.runtime.lastError.message);
+            }
+        });
     }
 }
 
