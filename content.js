@@ -65,22 +65,22 @@
         /* ダークモード */
         @media (prefers-color-scheme: dark) {
             .gemini-dialog {
-                background-color: #2b2b2b;
+                background-color: #1e1e1e;
                 border-color: #444;
                 color: #e0e0e0;
             }
             
             .gemini-dialog-header {
                 border-bottom-color: #444;
-                background-color: #333;
+                background-color: #252525;
             }
             
             .gemini-dialog-title {
-                color: #f0f0f0;
+                color: #ffffff;
             }
             
             .gemini-dialog-description {
-                color: #b0b0b0;
+                color: #d0d0d0;
             }
             
             .gemini-dialog-textarea {
@@ -135,6 +135,26 @@
             
             .chat-bubble-ai textarea {
                 color: #e0e0e0 !important;
+            }
+            
+            /* ダークモード用のボタンスタイル */
+            .gemini-send-btn {
+                background-color: #3a3a3a !important;
+                color: #e0e0e0 !important;
+            }
+            
+            .gemini-send-btn:hover {
+                background-color: #4a4a4a !important;
+            }
+            
+            .gemini-copy-btn {
+                background-color: #3a3a3a !important;
+                border-color: #555 !important;
+                color: #e0e0e0 !important;
+            }
+            
+            .gemini-copy-btn:hover {
+                background-color: #4a4a4a !important;
             }
         }
     `;
@@ -249,13 +269,13 @@ function showInstructionDialog(onSubmit) {
 
     Object.assign(dialog.style, {
         position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-        zIndex: '10001', backgroundColor: '#fff', border: '1px solid #ccc', borderRadius: '12px',
+        zIndex: '10001', border: '1px solid #ccc', borderRadius: '12px',
         boxShadow: '0 8px 24px rgba(0,0,0,0.3)', padding: '24px', width: '560px', maxWidth: '90vw',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     });
 
     dialog.innerHTML = `
-        <h3 class="gemini-dialog-title" style="margin-top: 0; margin-bottom: 16px; font-size: 18px;">Geminiで画像に指示</h3>
+        <h3 class="gemini-dialog-title" style="margin-top: 0; margin-bottom: 16px; font-size: 18px; font-weight: 600;">Geminiで画像に指示</h3>
         <p class="gemini-dialog-description" style="margin: 0 0 12px; font-size: 14px;">画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。</p>
         <textarea id="gemini-prompt-textarea" class="gemini-dialog-textarea" style="width: calc(100% - 20px); min-height: 100px; margin-bottom: 16px; padding: 8px; border: 1px solid; border-radius: 4px; font-size: 14px; resize: vertical;" autocomplete="off">この画像の代替テキストを簡潔に日本語で生成してください。</textarea>
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
@@ -313,7 +333,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     dialog.className = 'gemini-dialog';
     Object.assign(dialog.style, {
         position: 'fixed', top: '20px', left: '20px', zIndex: '10000',
-        backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '12px',
+        border: '1px solid #ddd', borderRadius: '12px',
         boxShadow: '0 8px 25px rgba(0,0,0,0.2)', width: '550px', display: 'flex',
         flexDirection: 'column', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         maxHeight: '90vh', overflowY: 'auto'
@@ -333,15 +353,16 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     const title = document.createElement('h3');
     title.className = 'gemini-dialog-title';
     title.textContent = 'Altテキスト生成チャット' + (modelLabel ? ` (${modelLabel})` : '');
-    Object.assign(title.style, { margin: '0', fontSize: '16px', color: '#222', fontWeight: '600' });
+    Object.assign(title.style, { margin: '0', fontSize: '16px', fontWeight: '600' });
     header.appendChild(title);
 
     // Close Button (Moved to header)
     const closeButton = document.createElement('button');
+    closeButton.className = 'gemini-close-btn';
     closeButton.innerHTML = '&times;';
     Object.assign(closeButton.style, {
         background: 'none', border: 'none', fontSize: '24px',
-        lineHeight: '1', cursor: 'pointer', color: '#666', padding: '0 4px',
+        lineHeight: '1', cursor: 'pointer', padding: '0 4px',
         marginLeft: '10px'
     });
     closeButton.onclick = () => dialog.remove();
@@ -386,6 +407,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
 
     // Send Button (Icon)
     const sendButton = document.createElement('button');
+    sendButton.className = 'gemini-send-btn';
     // Simple send icon SVG
     sendButton.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/></svg>`;
     Object.assign(sendButton.style, {
@@ -495,6 +517,7 @@ function addMessageToChat(text, sender) {
         bubble.appendChild(textArea);
 
         const copyButton = document.createElement('button');
+        copyButton.className = 'gemini-copy-btn';
         // Copy icon SVG
         copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
         copyButton.setAttribute('aria-label', 'テキストをコピー');
@@ -502,6 +525,7 @@ function addMessageToChat(text, sender) {
             background: '#fff', border: '1px solid #ccc', borderRadius: '50%',
             width: '40px', height: '40px', cursor: 'pointer', flexShrink: '0',
             display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0',
+            color: '#333',
             transition: 'background-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease'
         });
 
