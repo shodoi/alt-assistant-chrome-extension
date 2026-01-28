@@ -206,7 +206,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
 
     const chatHistory = document.createElement('div');
     chatHistory.id = 'gemini-chat-history';
-    Object.assign(chatHistory.style, { overflow: 'visible', padding: '15px 20px', flexGrow: '1', background: '#fff' });
+    Object.assign(chatHistory.style, { overflow: 'visible', padding: '15px 20px', flexGrow: '1', background: '#f5f5f5' });
 
     const inputArea = document.createElement('div');
     Object.assign(inputArea.style, {
@@ -310,59 +310,52 @@ function addMessageToChat(text, sender) {
 
     const wrapper = document.createElement('div');
     Object.assign(wrapper.style, {
-        display: 'flex',
+        display: sender === 'ai' ? 'grid' : 'flex',
+        gridTemplateColumns: sender === 'ai' ? '1fr auto' : 'initial',
         justifyContent: sender === 'user' ? 'flex-end' : 'flex-start',
+        alignItems: 'center',
         marginBottom: '12px',
-        position: 'relative'
+        gap: sender === 'ai' ? '16px' : '0'
     });
 
     const bubble = document.createElement('div');
     bubble.classList.add(`chat-bubble-${sender}`);
     Object.assign(bubble.style, {
-        maxWidth: sender === 'ai' ? '90%' : '85%',
-        width: sender === 'ai' ? '90%' : 'auto',
+        maxWidth: sender === 'user' ? '85%' : 'none',
         padding: '10px 15px',
         borderRadius: '18px',
-        background: sender === 'user' ? '#007bff' : (sender === 'ai' ? '#e9e9eb' : '#f5f5f5'),
+        background: sender === 'user' ? '#007bff' : (sender === 'ai' ? '#fff' : '#f5f5f5'),
         color: sender === 'user' ? 'white' : '#333',
         fontSize: '14.5px',
         lineHeight: '1.5',
-        textAlign: 'left'
+        textAlign: 'left',
+        border: sender === 'ai' ? '1px solid #e0e0e0' : 'none',
+        boxSizing: 'border-box'
     });
 
     if (sender === 'ai') {
         const textArea = document.createElement('textarea');
+        textArea.setAttribute('readonly', 'readonly');
         Object.assign(textArea.style, {
-            width: 'calc(100% - 12px)', minHeight: '80px', padding: '6px',
-            border: '1px solid #ddd', borderRadius: '6px', resize: 'vertical',
-            background: '#fff', color: '#000', margin: '0',
-            overflow: 'hidden', boxSizing: 'border-box'
+            width: '100%', minHeight: 'fit-content', padding: '0',
+            border: 'none', borderRadius: '0', resize: 'none',
+            background: 'transparent', color: '#000', margin: '0',
+            overflow: 'hidden', boxSizing: 'border-box', fontFamily: 'inherit',
+            fontSize: 'inherit', lineHeight: 'inherit', outline: 'none'
         });
         textArea.value = text;
-
-        // textareaの高さをコンテンツに応じて自動調整
-        const autoResize = () => {
-            textArea.style.height = 'auto';
-            const newHeight = Math.max(80, textArea.scrollHeight);
-            textArea.style.height = newHeight + 'px';
-        };
-
-        // inputイベント時に高さを調整
-        textArea.addEventListener('input', autoResize);
 
         bubble.appendChild(textArea);
 
         const copyButton = document.createElement('button');
         // Copy icon SVG
-        copyButton.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
+        copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
         copyButton.setAttribute('aria-label', 'テキストをコピー');
         Object.assign(copyButton.style, {
             background: '#fff', border: '1px solid #ccc', borderRadius: '50%',
-            width: '28px', height: '28px', cursor: 'pointer',
-            position: 'absolute', right: '-12px', top: '50%',
-            transform: 'translateY(-50%)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', padding: '0',
-            transition: 'background-color 0.2s ease, box-shadow 0.2s ease'
+            width: '40px', height: '40px', cursor: 'pointer', flexShrink: '0',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0',
+            transition: 'background-color 0.2s ease, box-shadow 0.2s ease, transform 0.1s ease'
         });
 
         copyButton.onclick = (e) => {
@@ -373,9 +366,9 @@ function addMessageToChat(text, sender) {
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 // モダンなClipboard API
                 navigator.clipboard.writeText(textToCopy).then(() => {
-                    copyButton.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#28a745"/></svg>`; // Checkmark
+                    copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#28a745"/></svg>`; // Checkmark
                     setTimeout(() => {
-                        copyButton.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
+                        copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
                     }, 1500);
                 }).catch(() => {
                     // Clipboard APIが失敗した場合のフォールバック
@@ -387,6 +380,8 @@ function addMessageToChat(text, sender) {
             }
         };
 
+        copyButton.addEventListener('mousedown', () => copyButton.style.transform = 'scale(0.95)');
+        copyButton.addEventListener('mouseup', () => copyButton.style.transform = 'scale(1)');
         copyButton.addEventListener('focus', () => {
             copyButton.style.outline = '2px solid #007bff';
             copyButton.style.outlineOffset = '2px';
@@ -404,13 +399,13 @@ function addMessageToChat(text, sender) {
             copyButton.style.boxShadow = '';
         });
 
+        wrapper.appendChild(bubble);
         wrapper.appendChild(copyButton);
 
     } else {
         bubble.textContent = text;
+        wrapper.appendChild(bubble);
     }
-
-    wrapper.appendChild(bubble);
     chatHistory.appendChild(wrapper);
 
     chatHistory.scrollTop = chatHistory.scrollHeight;
@@ -421,8 +416,7 @@ function addMessageToChat(text, sender) {
             const textArea = bubble.querySelector('textarea');
             if (textArea) {
                 textArea.style.height = 'auto';
-                const newHeight = Math.max(80, textArea.scrollHeight);
-                textArea.style.height = newHeight + 'px';
+                textArea.style.height = textArea.scrollHeight + 'px';
             }
         }, 0);
     }
@@ -447,22 +441,22 @@ function fallbackCopyTextToClipboard(text, buttonElement) {
     try {
         const successful = document.execCommand('copy');
         if (successful) {
-            buttonElement.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#28a745"/></svg>`;
+            buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#28a745"/></svg>`;
             setTimeout(() => {
-                buttonElement.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
+                buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
             }, 1500);
         } else {
             console.error('フォールバックコピーに失敗しました');
             buttonElement.textContent = '✗';
             setTimeout(() => {
-                buttonElement.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
+                buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
             }, 1500);
         }
     } catch (err) {
         console.error('コピー処理でエラーが発生しました:', err);
         buttonElement.textContent = '✗';
         setTimeout(() => {
-            buttonElement.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
+            buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
         }, 1500);
     } finally {
         document.body.removeChild(textArea);
