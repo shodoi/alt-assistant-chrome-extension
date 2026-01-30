@@ -2,10 +2,11 @@
 
 // ユーザーが希望したモデルの優先順位リスト
 const MODEL_PRIORITY_LIST = [
-    { id: 'gemini-3-pro-preview', label: '3.0 Pro Preview' },
+    { id: 'gemini-2.5-flash-lite', label: '2.5 Flash-Lite' },
     { id: 'gemini-3-flash-preview', label: '3.0 Flash Preview' },
-    { id: 'gemini-2.5-pro', label: '2.5 Pro' },
-    { id: 'gemini-2.5-flash', label: '2.5 Flash' }
+    { id: 'gemini-2.5-flash', label: '2.5 Flash' },
+    { id: 'gemini-3-pro-preview', label: '3.0 Pro Preview' },
+    { id: 'gemini-2.5-pro', label: '2.5 Pro' }
 ];
 
 /**
