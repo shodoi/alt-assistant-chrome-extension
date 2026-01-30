@@ -177,23 +177,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             showInstructionDialog((userChoice) => sendResponse(userChoice));
             return true; // 非同期でsendResponseを呼び出すため
 
+        case 'updateModelStatus':
             const imageElementForStatus = findImageElement(message.imageUrl);
             if (imageElementForStatus) {
-                // Check if dialog exists; if so, do not show overlay status (redundant)
-                if (!document.getElementById('gemini-alt-dialog')) {
+                const dialog = document.getElementById('gemini-alt-dialog');
+                // ダイアログが存在しない、または別の画像用のダイアログが表示されている場合はオーバーレイを表示
+                if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
                     showStatus(imageElementForStatus, message.statusText, "loading");
                 }
             }
             break;
 
         case "startAltTextGeneration":
-            // startAltTextGenerationは実質的にローディング開始の合図として使われるが、
-            // updateModelStatusがモデルごとの詳細を伝えるため、ここは初期表示のみ、あるいはupdateModelStatusに任せる。
-            // フォールバックロジックでは updateModelStatus が都度呼ばれるため、ここは控えめにするか、
-            // 最初の "開始" を示すために残すが、メッセージは updateModelStatus で上書きされる。
             const imageElementForLoading = findImageElement(message.imageUrl);
-            if (imageElementForLoading && !document.getElementById('gemini-alt-dialog')) {
-                showStatus(imageElementForLoading, `AIで生成を開始...`, "loading");
+            if (imageElementForLoading) {
+                const dialog = document.getElementById('gemini-alt-dialog');
+                if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
+                    showStatus(imageElementForLoading, `AIで生成を開始...`, "loading");
+                }
             }
             break;
 
@@ -246,12 +247,14 @@ function handleUpdateAltText(message) {
     }
 
     const dialog = document.getElementById('gemini-alt-dialog');
-    if (dialog) {
+    if (dialog && dialog.dataset.imageSrc === message.imageUrl) {
+        // 同じ画像に対する応答（再生成など）であれば追記
         const loadingBubble = dialog.querySelector('.chat-bubble-loading');
         if (loadingBubble) loadingBubble.remove();
         addMessageToChat(message.altText, 'ai');
         toggleDialogInputs(dialog, true);
     } else {
+        // ダイアログがない、または別の画像に対する生成結果であればリセットして表示
         showAltTextDialog(message.altText, imageElement, message.modelLabel, message.targetElementId);
     }
 }
@@ -331,6 +334,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     const dialog = document.createElement('div');
     dialog.id = 'gemini-alt-dialog';
     dialog.className = 'gemini-dialog';
+    dialog.dataset.imageSrc = imageElement.src; // 現在の画像URLを保存
     Object.assign(dialog.style, {
         position: 'fixed', top: '20px', left: '20px', zIndex: '10000',
         border: '1px solid #ddd', borderRadius: '12px',
