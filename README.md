@@ -12,7 +12,7 @@ Google Gemini AIを使用して画像の代替テキスト（alt属性）を自�
 ### 主な機能
 
 - ✨ **AIによる自動生成**: Google Gemini APIが画像内容を分析し、適切なalt textを生成
-- 🔄 **モデル自動フォールバック**: 複数のGeminiモデル（3.0 Pro/Flash、2.5 Pro/Flash）を優先順位に従って自動的に試行
+- 🔄 **モデル自動フォールバック**: 複数のGeminiモデル（2.5 Flash-Lite/Flash、3.0 Pro/Flashなど）を優先順位に従って自動的に試行
 - 💬 **チャット形式のUI**: LINE風のインターフェースで対話的に生成・修正が可能
 - 🎨 **ダークモード対応**: ブラウザのダークモード設定に自動対応
 - 📋 **ワンクリックコピー**: 生成されたテキストを簡単にコピー
@@ -28,9 +28,9 @@ Google Gemini AIを使用して画像の代替テキスト（alt属性）を自�
 
 ### 2. 拡張機能のインストール
 
-1. このリポジトリをクローンまたはダウンロード
+1. このリポジトリをダウンロード（またはクローン）します。
    ```bash
-   git clone https://github.com/yourusername/google-alt-generator.git
+   git clone https://github.com/shodoi/alt-assistant-chrome-extension.git
    ```
 
 2. Chromeで `chrome://extensions` を開く
@@ -110,10 +110,11 @@ Google Gemini AIを使用して画像の代替テキスト（alt属性）を自�
 
 ### 使用モデル（優先順位順）
 
-1. **Gemini 3.0 Pro Preview** - 最新の高性能モデル
+1. **Gemini 2.5 Flash-Lite** - 最速かつ適切な応答が可能
 2. **Gemini 3.0 Flash Preview** - バランス重視
-3. **Gemini 2.5 Pro** - 安定版
-4. **Gemini 2.5 Flash** - 高速版
+3. **Gemini 2.5 Flash** - 安定版
+4. **Gemini 3.0 Pro Preview** - 高性能
+5. **Gemini 2.5 Pro** - 高性能（安定版）
 
 APIエラーやレートリミット到達時、自動的に次のモデルへフォールバックします。
 
