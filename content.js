@@ -699,12 +699,15 @@ function showStatus(imageElement, message, type) {
     statusDiv.classList.add('gemini-alt-status');
     statusDiv.setAttribute('data-image-src', imageElement.src);
 
-    // スピナーを追加するためのHTML構築
-    let spinnerHtml = '';
+    // スピナーを追加するためのDOM構築
     if (type === 'loading') {
-        spinnerHtml = '<span class="gemini-spinner"></span>';
+        const spinner = document.createElement('span');
+        spinner.className = 'gemini-spinner';
+        statusDiv.appendChild(spinner);
     }
-    statusDiv.innerHTML = `${spinnerHtml}<span>${message}</span>`;
+    const msgSpan = document.createElement('span');
+    msgSpan.textContent = message;
+    statusDiv.appendChild(msgSpan);
 
     Object.assign(statusDiv.style, {
         position: 'absolute',
@@ -741,21 +744,83 @@ function showStatus(imageElement, message, type) {
 function showRateLimitDialog(modelLabel) {
     const existingDialog = document.getElementById('gemini-error-dialog');
     if (existingDialog) existingDialog.remove();
+    
     const dialog = document.createElement('div');
     dialog.id = 'gemini-error-dialog';
-    Object.assign(dialog.style, { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: '10001', backgroundColor: '#fff3cd', border: '2px solid #ffc107', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.3)', padding: '24px', width: '400px', maxWidth: '90vw', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', fontSize: '14px', color: '#333' });
-    dialog.innerHTML = `...`;
+    Object.assign(dialog.style, { 
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', 
+        zIndex: '10001', backgroundColor: '#fff3cd', border: '2px solid #ffc107', 
+        borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.3)', padding: '24px', 
+        width: '400px', maxWidth: '90vw', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', 
+        fontSize: '14px', color: '#333' 
+    });
+
+    const title = document.createElement('h3');
+    title.textContent = '⚠️ レート制限に達しました';
+    title.style.margin = '0 0 12px 0';
+    title.style.color = '#856404';
+    dialog.appendChild(title);
+
+    const message = document.createElement('p');
+    message.textContent = `Gemini API (${modelLabel || 'モデル'}) の利用制限に達しました。しばらく待ってから再試行してください。`;
+    message.style.margin = '0 0 20px 0';
+    dialog.appendChild(message);
+
+    const btnContainer = document.createElement('div');
+    btnContainer.style.textAlign = 'right';
+    
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '閉じる';
+    Object.assign(closeBtn.style, { 
+        padding: '8px 16px', backgroundColor: '#ffc107', border: 'none', 
+        borderRadius: '4px', cursor: 'pointer', color: '#212529', fontWeight: 'bold' 
+    });
+    closeBtn.onclick = () => dialog.remove();
+    
+    btnContainer.appendChild(closeBtn);
+    dialog.appendChild(btnContainer);
+
     document.body.appendChild(dialog);
-    document.getElementById('close-error-dialog').onclick = () => dialog.remove();
 }
 
 function showApiKeyErrorDialog(modelLabel) {
     const existingDialog = document.getElementById('gemini-error-dialog');
     if (existingDialog) existingDialog.remove();
+    
     const dialog = document.createElement('div');
     dialog.id = 'gemini-error-dialog';
-    Object.assign(dialog.style, { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: '10001', backgroundColor: '#f8d7da', border: '2px solid #dc3545', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.3)', padding: '24px', width: '380px', maxWidth: '90vw', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', fontSize: '14px', color: '#333' });
-    dialog.innerHTML = `...`;
+    Object.assign(dialog.style, { 
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', 
+        zIndex: '10001', backgroundColor: '#f8d7da', border: '2px solid #dc3545', 
+        borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.3)', padding: '24px', 
+        width: '380px', maxWidth: '90vw', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', 
+        fontSize: '14px', color: '#333' 
+    });
+
+    const title = document.createElement('h3');
+    title.textContent = '🚫 APIキーエラー';
+    title.style.margin = '0 0 12px 0';
+    title.style.color = '#721c24';
+    dialog.appendChild(title);
+
+    const message = document.createElement('p');
+    message.textContent = 'APIキーが無効か、設定されていません。拡張機能のオプションページで正しいAPIキーを設定してください。';
+    message.style.margin = '0 0 20px 0';
+    dialog.appendChild(message);
+
+    const btnContainer = document.createElement('div');
+    btnContainer.style.textAlign = 'right';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '閉じる';
+    Object.assign(closeBtn.style, { 
+        padding: '8px 16px', backgroundColor: '#dc3545', border: 'none', 
+        borderRadius: '4px', cursor: 'pointer', color: '#fff', fontWeight: 'bold' 
+    });
+    closeBtn.onclick = () => dialog.remove();
+
+    btnContainer.appendChild(closeBtn);
+    dialog.appendChild(btnContainer);
+
     document.body.appendChild(dialog);
-    document.getElementById('close-error-dialog').onclick = () => dialog.remove();
 }

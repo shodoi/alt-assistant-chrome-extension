@@ -186,7 +186,7 @@ Output in Japanese.
  * APIキーの有無に応じてコンテキストメニューの状態を更新します。
  */
 async function updateContextMenuState() {
-    const { geminiApiKey } = await chrome.storage.sync.get('geminiApiKey');
+    const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
     const hasValidKey = !!geminiApiKey;
     
     chrome.contextMenus.update("instructWithGemini", {
@@ -215,7 +215,7 @@ chrome.runtime.onStartup.addListener(() => {
 
 // APIキーが変更されたらコンテキストメニューの状態を更新
 chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'sync' && changes.geminiApiKey) {
+    if (areaName === 'local' && changes.geminiApiKey) {
         updateContextMenuState();
     }
 });
@@ -260,7 +260,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 async function generateAltTextWithGemini(imageUrl, model, promptText) {
     return new Promise(async (resolve, reject) => {
         try {
-            const { geminiApiKey } = await chrome.storage.sync.get('geminiApiKey');
+            const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
             if (!geminiApiKey) throw new Error("APIキーが設定されていません。拡張機能のオプションページで設定してください。");
 
             const response = await fetch(imageUrl);
@@ -272,10 +272,10 @@ async function generateAltTextWithGemini(imageUrl, model, promptText) {
                 try {
                     const base64Image = reader.result.split(',')[1];
                     const mimeType = blob.type;
-                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`;
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
                     const payload = { contents: [{ parts: [{ text: promptText }, { inline_data: { mime_type: mimeType, data: base64Image } }] }] };
 
-                    const apiResponse = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    const apiResponse = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiApiKey }, body: JSON.stringify(payload) });
 
                     if (!apiResponse.ok) {
                         const errorData = await apiResponse.json();
