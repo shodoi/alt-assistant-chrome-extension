@@ -1,2 +1,5 @@
 # Ignore all .ini files
 *.ini
+
+# 開発者メモ（非公開）
+TODO.md
