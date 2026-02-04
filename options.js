@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusMessage = document.getElementById('statusMessage');
     const modelPriorityList = document.getElementById('modelPriorityList');
     const resetModelPriorityButton = document.getElementById('resetModelPriorityButton');
+    const saveModelPriorityButton = document.getElementById('saveModelPriorityButton');
 
     const MODEL_PRIORITY_STORAGE_KEY = 'geminiModelPriorityOrder';
     let currentModelOrder = Array.from(GEMINI_DEFAULT_MODEL_ORDER);
@@ -114,75 +115,144 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const li = document.createElement('li');
         li.className = 'model-item';
+        li.draggable = true;
+        li.dataset.index = index;
 
-        const meta = document.createElement('div');
-        meta.className = 'model-meta';
+        // ドラッグハンドル
+        const dragHandle = document.createElement('div');
+        dragHandle.className = 'drag-handle';
+        dragHandle.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11 18H13V20H11V18ZM11 14H13V16H11V14ZM11 10H13V12H11V10ZM11 6H13V8H11V6ZM7 18H9V20H7V18ZM7 14H9V16H7V14ZM7 10H9V12H7V10ZM7 6H9V8H7V6ZM15 18H17V20H15V18ZM15 14H17V16H15V14ZM15 10H17V12H15V10ZM15 6H17V8H15V6Z" /></svg>`;
+        
+        // コンテンツエリア
+        const content = document.createElement('div');
+        content.className = 'model-content';
+
+        const header = document.createElement('div');
+        header.className = 'model-header';
 
         const label = document.createElement('div');
         label.className = 'model-label';
         label.textContent = model.label;
 
-        const id = document.createElement('div');
-        id.className = 'model-id';
-        id.textContent = model.id;
+        const badges = document.createElement('div');
+        badges.className = 'model-badges';
+        badges.innerHTML = `
+            <span class="badge badge-speed">速度: ${'⚡'.repeat(model.speed)}</span>
+            <span class="badge badge-quality">品質: ${'★'.repeat(model.quality)}</span>
+        `;
 
-        meta.appendChild(label);
-        meta.appendChild(id);
+        header.appendChild(label);
+        header.appendChild(badges);
 
-        const controls = document.createElement('div');
-        controls.className = 'model-controls';
+        const desc = document.createElement('p');
+        desc.className = 'model-desc';
+        desc.textContent = model.desc || '';
 
-        const upButton = document.createElement('button');
-        upButton.type = 'button';
-        upButton.className = 'model-move-button';
-        upButton.textContent = '↑';
-        upButton.disabled = index === 0;
-        upButton.setAttribute('aria-label', `${model.label} を上へ`);
+        content.appendChild(header);
+        content.appendChild(desc);
 
-        const downButton = document.createElement('button');
-        downButton.type = 'button';
-        downButton.className = 'model-move-button';
-        downButton.textContent = '↓';
-        downButton.disabled = index === currentModelOrder.length - 1;
-        downButton.setAttribute('aria-label', `${model.label} を下へ`);
+        li.appendChild(dragHandle);
+        li.appendChild(content);
 
-        upButton.addEventListener('click', async () => {
-          if (index <= 0) return;
-          const next = currentModelOrder.slice();
-          const [item] = next.splice(index, 1);
-          next.splice(index - 1, 0, item);
-          currentModelOrder = next;
-          renderModelOrder();
-          await saveModelOrder(next);
-        });
+        // イベントリスナー
+        addDragEvents(li);
 
-        downButton.addEventListener('click', async () => {
-          if (index >= currentModelOrder.length - 1) return;
-          const next = currentModelOrder.slice();
-          const [item] = next.splice(index, 1);
-          next.splice(index + 1, 0, item);
-          currentModelOrder = next;
-          renderModelOrder();
-          await saveModelOrder(next);
-        });
-
-        controls.appendChild(upButton);
-        controls.appendChild(downButton);
-
-        li.appendChild(meta);
-        li.appendChild(controls);
         modelPriorityList.appendChild(li);
       });
     }
 
+    // ドラッグ&ドロップ関連の変数
+    let dragSrcEl = null;
+
+    function addDragEvents(item) {
+      item.addEventListener('dragstart', handleDragStart);
+      item.addEventListener('dragover', handleDragOver);
+      item.addEventListener('drop', handleDrop);
+      item.addEventListener('dragend', handleDragEnd);
+      // タッチデバイス向けの簡易的な対応は今回は省略（Chrome拡張なのでPCメイン想定）
+    }
+
+    function handleDragStart(e) {
+      dragSrcEl = this;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', this.dataset.index);
+      setTimeout(() => this.classList.add('dragging'), 0);
+    }
+
+    function handleDragOver(e) {
+      if (e.preventDefault) {
+        e.preventDefault();
+      }
+      e.dataTransfer.dropEffect = 'move';
+      return false;
+    }
+
+    let hasUnsavedChanges = false;
+
+    // ... (loadModelOrderなどはそのまま)
+
+    // handleDrop内での自動保存を停止し、保存ボタンを有効化
+    function handleDrop(e) {
+      e.stopPropagation();
+      
+      const dragEndIndex = Number(this.dataset.index);
+      const dragStartIndex = Number(dragSrcEl.dataset.index);
+
+      if (dragSrcEl !== this) {
+        // 配列を並べ替え
+        const newOrder = Array.from(currentModelOrder);
+        const [movedItem] = newOrder.splice(dragStartIndex, 1);
+        newOrder.splice(dragEndIndex, 0, movedItem);
+        
+        currentModelOrder = newOrder;
+        renderModelOrder();
+        
+        // 自動保存せず、変更フラグを立ててボタンを有効化
+        hasUnsavedChanges = true;
+        updateSaveButtonState();
+      }
+      
+      return false;
+    }
+
+    function handleDragEnd() {
+      this.classList.remove('dragging');
+      dragSrcEl = null;
+    }
+
+    function updateSaveButtonState() {
+        if (saveModelPriorityButton) {
+            saveModelPriorityButton.disabled = !hasUnsavedChanges;
+            saveModelPriorityButton.textContent = hasUnsavedChanges ? '順序を保存' : '保存済み';
+        }
+    }
+
     if (resetModelPriorityButton) {
       resetModelPriorityButton.addEventListener('click', async () => {
+        if (!confirm('モデルの優先順位を初期状態に戻しますか？')) return;
         const defaultOrder = Array.from(GEMINI_DEFAULT_MODEL_ORDER);
         currentModelOrder = defaultOrder;
         renderModelOrder();
         await saveModelOrder(defaultOrder);
+        hasUnsavedChanges = false;
+        updateSaveButtonState();
         showStatus('モデル順位をデフォルトに戻しました。', 'success');
       });
+    }
+
+    if (saveModelPriorityButton) {
+        saveModelPriorityButton.addEventListener('click', async () => {
+            if (!hasUnsavedChanges) return;
+            
+            saveModelPriorityButton.disabled = true;
+            saveModelPriorityButton.textContent = '保存中...';
+            
+            await saveModelOrder(currentModelOrder);
+            
+            hasUnsavedChanges = false;
+            updateSaveButtonState();
+            showStatus('モデルの優先順位を保存しました。', 'success');
+        });
     }
 
     loadModelOrder();

@@ -258,7 +258,8 @@ function handleUpdateAltText(message) {
     if (!imageElement) return;
 
     // Remove existing status from body if any
-    const existingStatus = document.querySelector(`.gemini-alt-status[data-image-src="${message.imageUrl}"]`);
+    // message.imageUrl ではなく、特定した imageElement.src をキーにして削除する（showStatusで設定した値と合わせるため）
+    const existingStatus = document.querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
     if (existingStatus) {
         existingStatus.remove();
     }

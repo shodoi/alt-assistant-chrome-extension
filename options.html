@@ -5,85 +5,91 @@
     <title>Gemini Alt Text Generator 設定</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            padding: 20px;
-            min-width: 300px;
-            background-color: #f4f4f4;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            padding: 40px 20px;
+            min-width: 320px;
+            background-color: #f8f9fa;
             color: #333;
+            line-height: 1.6;
         }
         h1 {
-            color: #2c3e50;
-            margin-bottom: 20px;
+            color: #202124;
+            margin-bottom: 24px;
             text-align: center;
+            font-size: 22px;
         }
         .container {
             background-color: #ffffff;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            padding: 20px;
-            max-width: 500px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            padding: 32px;
+            max-width: 560px;
             margin: 0 auto;
         }
         label {
             display: block;
             margin-bottom: 8px;
-            font-weight: bold;
-            color: #555;
+            font-weight: 600;
+            color: #202124;
+            font-size: 14px;
         }
-        input[type="text"] {
-            width: calc(100% - 22px); /* paddingとborderを考慮 */
-            padding: 10px;
-            margin-bottom: 15px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-sizing: border-box; /* paddingとborderをwidthに含める */
+        input[type="password"] {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 16px;
+            border: 1px solid #dadce0;
+            border-radius: 8px;
+            box-sizing: border-box;
+            font-size: 14px;
+            transition: border-color 0.2s;
         }
-        button {
-            background-color: #3498db;
+        input[type="password"]:focus {
+            border-color: #1a73e8;
+            outline: none;
+        }
+        button#saveButton {
+            background-color: #1a73e8;
             color: white;
-            padding: 10px 20px;
+            padding: 12px 24px;
             border: none;
-            border-radius: 5px;
+            border-radius: 8px;
             cursor: pointer;
-            font-size: 16px;
-            transition: background-color 0.3s ease;
-            display: block;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background-color 0.2s;
             width: 100%;
             box-sizing: border-box;
         }
-        button:hover {
-            background-color: #2980b9;
+        button#saveButton:hover {
+            background-color: #1557b0;
         }
-        button:focus-visible {
-            outline: 2px solid #2c3e50;
-            outline-offset: 2px;
+        button#saveButton:disabled {
+            background-color: #9aa0a6;
+            cursor: default;
         }
         #statusMessage {
-            margin-top: 15px;
-            padding: 10px;
-            border-radius: 4px;
+            margin-top: 16px;
+            padding: 12px;
+            border-radius: 8px;
             font-size: 14px;
             text-align: center;
-            display: none; /* 初期状態では非表示 */
+            display: none;
         }
         #statusMessage.success {
-            background-color: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
+            background-color: #e6f4ea;
+            color: #137333;
         }
         #statusMessage.error {
-            background-color: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+            background-color: #fce8e6;
+            color: #c5221f;
         }
         p {
             font-size: 14px;
-            line-height: 1.5;
-            color: #666;
-            margin-bottom: 10px;
+            color: #5f6368;
+            margin-bottom: 16px;
         }
         a {
-            color: #3498db;
+            color: #1a73e8;
             text-decoration: none;
         }
         a:hover {
@@ -91,80 +97,135 @@
         }
         hr.divider {
             border: none;
-            border-top: 1px solid #e6e6e6;
-            margin: 24px 0;
+            border-top: 1px solid #f1f3f4;
+            margin: 32px 0;
         }
         h2 {
             font-size: 16px;
             margin: 0 0 12px 0;
-            color: #2c3e50;
+            color: #202124;
+            font-weight: 600;
         }
         .model-list {
             list-style: none;
             padding: 0;
-            margin: 0 0 12px 0;
+            margin: 0 0 16px 0;
         }
         .model-item {
             display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            padding: 10px 12px;
-            border: 1px solid #e6e6e6;
-            border-radius: 6px;
-            background: #fafafa;
+            align-items: center; /* 中央揃えにはしない（説明文があるため） */
+            align-items: flex-start;
+            gap: 12px;
+            padding: 16px;
+            border: 1px solid #dadce0;
+            border-radius: 8px;
+            background: #ffffff;
             margin-bottom: 8px;
+            cursor: grab;
+            transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+            user-select: none;
+            position: relative;
         }
-        .model-meta {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
+        .model-item:hover {
+            border-color: #bdc1c6;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        .model-item.dragging {
+            opacity: 0.5;
+            background: #f1f3f4;
+            border: 2px dashed #1a73e8;
+            cursor: grabbing;
+        }
+        .drag-handle {
+            color: #9aa0a6;
+            cursor: grab;
+            padding-top: 2px;
+            flex-shrink: 0;
+        }
+        .model-content {
+            flex-grow: 1;
             min-width: 0;
+        }
+        .model-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
         }
         .model-label {
             font-weight: 600;
-            color: #333;
+            color: #202124;
             font-size: 14px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
         }
-        .model-id {
-            font-size: 12px;
-            color: #777;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .model-controls {
+        .model-badges {
             display: flex;
             gap: 6px;
-            flex-shrink: 0;
         }
+        .badge {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+        .badge-speed {
+            background-color: #e8f0fe;
+            color: #1967d2;
+        }
+        .badge-quality {
+            background-color: #fce8e6; /* 品質重視の赤系、あるいは紫系 */
+            background-color: #f3e8fd;
+            color: #9334e6;
+        }
+        .model-desc {
+            font-size: 13px;
+            color: #5f6368;
+            margin: 0;
+            line-height: 1.4;
+        }
+        
         button.secondary {
-            background-color: #95a5a6;
+            background-color: #ffffff;
+            color: #5f6368;
+            border: 1px solid #dadce0;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            width: auto;
+            margin-top: 8px;
+            display: inline-block;
         }
         button.secondary:hover {
-            background-color: #7f8c8d;
+            background-color: #f8f9fa;
+            color: #202124;
+            border-color: #bdc1c6;
         }
-        button.model-move-button {
-            width: auto;
-            padding: 6px 10px;
-            font-size: 14px;
-            background-color: #ecf0f1;
-            color: #333;
-            border: 1px solid #dfe6e9;
-            border-radius: 6px;
-            display: inline-flex;
+        .button-group {
+            display: flex;
+            justify-content: space-between;
             align-items: center;
-            justify-content: center;
+            margin-top: 16px;
         }
-        button.model-move-button:hover {
-            background-color: #dfe6e9;
+        button.primary {
+            background-color: #1a73e8;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            width: auto;
+            margin-top: 8px; /* secondaryと同じマージン */
         }
-        button.model-move-button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
+        button.primary:hover {
+            background-color: #1557b0;
+        }
+        button.primary:disabled {
+            background-color: #9aa0a6;
+            cursor: default;
+            opacity: 0.7;
         }
     </style>
 </head>
@@ -181,9 +242,13 @@
 
         <hr class="divider">
         <h2>モデルの優先順位</h2>
-        <p>上から順にモデルを試行します。必要に応じて並べ替えてください。</p>
+
+        <p>ドラッグ&ドロップでモデルの優先順位を並べ替えることができます。上にあるモデルほど優先的に使用されます。</p>
         <ul id="modelPriorityList" class="model-list" aria-label="モデルの優先順位"></ul>
-        <button id="resetModelPriorityButton" type="button" class="secondary">デフォルトに戻す</button>
+        <div class="button-group">
+            <button id="resetModelPriorityButton" type="button" class="secondary">デフォルトに戻す</button>
+            <button id="saveModelPriorityButton" type="button" class="primary" disabled>順序を保存</button>
+        </div>
     </div>
     <script src="models.js" defer></script>
     <script src="options.js" defer></script>
