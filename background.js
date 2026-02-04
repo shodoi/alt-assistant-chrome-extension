@@ -1,13 +1,40 @@
 // background.js
 
-// ユーザーが希望したモデルの優先順位リスト
-const MODEL_PRIORITY_LIST = [
-    { id: 'gemini-2.5-flash-lite', label: '2.5 Flash-Lite' },
-    { id: 'gemini-3-flash-preview', label: '3.0 Flash Preview' },
-    { id: 'gemini-2.5-flash', label: '2.5 Flash' },
-    { id: 'gemini-3-pro-preview', label: '3.0 Pro Preview' },
-    { id: 'gemini-2.5-pro', label: '2.5 Pro' }
-];
+importScripts('models.js');
+
+const MODEL_PRIORITY_STORAGE_KEY = 'geminiModelPriorityOrder';
+
+function areArraysEqual(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+        if (a[i] !== b[i]) return false;
+    }
+    return true;
+}
+
+async function migrateModelPriorityOrder() {
+    try {
+        const data = await chrome.storage.sync.get(MODEL_PRIORITY_STORAGE_KEY);
+        const storedOrder = data[MODEL_PRIORITY_STORAGE_KEY];
+        const normalized = normalizeGeminiModelOrder(storedOrder);
+        if (!areArraysEqual(storedOrder, normalized)) {
+            await chrome.storage.sync.set({ [MODEL_PRIORITY_STORAGE_KEY]: normalized });
+        }
+    } catch (error) {
+        console.warn('モデル優先順位の移行に失敗しました:', error);
+    }
+}
+
+async function getModelPriorityList() {
+    try {
+        const data = await chrome.storage.sync.get(MODEL_PRIORITY_STORAGE_KEY);
+        return getGeminiModelsByOrder(data[MODEL_PRIORITY_STORAGE_KEY]);
+    } catch (error) {
+        console.warn('モデル優先順位の取得に失敗しました:', error);
+        return GEMINI_MODEL_DEFINITIONS;
+    }
+}
 
 /**
  * Altテキスト生成の全プロセスを開始するメイン関数。
@@ -96,7 +123,9 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
 async function generateAltTextWithFallback(imageUrl, promptText, tabId, frameId) {
     let lastError = null;
 
-    for (const modelInfo of MODEL_PRIORITY_LIST) {
+    const modelPriorityList = await getModelPriorityList();
+
+    for (const modelInfo of modelPriorityList) {
         try {
             // UIに「〇〇モデルで生成中...」と通知
             chrome.tabs.sendMessage(tabId, { 
@@ -196,6 +225,7 @@ async function updateContextMenuState() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
+    migrateModelPriorityOrder();
     chrome.contextMenus.removeAll(() => {
       chrome.contextMenus.create({
         id: "instructWithGemini",

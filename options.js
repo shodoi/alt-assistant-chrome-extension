@@ -4,7 +4,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const apiKeyInput = document.getElementById('geminiApiKey');
     const saveButton = document.getElementById('saveButton');
     const statusMessage = document.getElementById('statusMessage');
-  
+    const modelPriorityList = document.getElementById('modelPriorityList');
+    const resetModelPriorityButton = document.getElementById('resetModelPriorityButton');
+
+    const MODEL_PRIORITY_STORAGE_KEY = 'geminiModelPriorityOrder';
+    let currentModelOrder = Array.from(GEMINI_DEFAULT_MODEL_ORDER);
+    let isSavingModelOrder = false;
+    let queuedModelOrderToSave = null;
+	  
     // 保存されているAPIキーをロードして表示
     chrome.storage.local.get('geminiApiKey', (data) => {
       if (data.geminiApiKey) {
@@ -49,7 +56,137 @@ document.addEventListener('DOMContentLoaded', () => {
         saveButton.textContent = 'APIキーを保存';
       }
     });
-  
+
+    function areArraysEqual(a, b) {
+      if (!Array.isArray(a) || !Array.isArray(b)) return false;
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i += 1) {
+        if (a[i] !== b[i]) return false;
+      }
+      return true;
+    }
+
+    async function loadModelOrder() {
+      try {
+        const data = await chrome.storage.sync.get(MODEL_PRIORITY_STORAGE_KEY);
+        const storedOrder = data[MODEL_PRIORITY_STORAGE_KEY];
+        const normalized = normalizeGeminiModelOrder(storedOrder);
+        currentModelOrder = normalized;
+
+        // 未設定/壊れたデータ/アップデートでモデルが増えた場合などを正規化して保存
+        if (!areArraysEqual(storedOrder, normalized)) {
+          await saveModelOrder(normalized);
+        }
+
+        renderModelOrder();
+      } catch (error) {
+        currentModelOrder = Array.from(GEMINI_DEFAULT_MODEL_ORDER);
+        renderModelOrder();
+        showStatus(`モデル順位の読み込みに失敗しました: ${error.message}`, 'error');
+      }
+    }
+
+    async function saveModelOrder(orderIds) {
+      queuedModelOrderToSave = orderIds;
+      if (isSavingModelOrder) return;
+
+      isSavingModelOrder = true;
+      try {
+        while (queuedModelOrderToSave) {
+          const nextOrder = queuedModelOrderToSave;
+          queuedModelOrderToSave = null;
+          await chrome.storage.sync.set({ [MODEL_PRIORITY_STORAGE_KEY]: nextOrder });
+        }
+      } catch (error) {
+        showStatus(`モデル順位の保存に失敗しました: ${error.message}`, 'error');
+      } finally {
+        isSavingModelOrder = false;
+      }
+    }
+
+    function renderModelOrder() {
+      if (!modelPriorityList) return;
+      modelPriorityList.textContent = '';
+
+      currentModelOrder.forEach((modelId, index) => {
+        const model = GEMINI_MODEL_BY_ID.get(modelId);
+        if (!model) return;
+
+        const li = document.createElement('li');
+        li.className = 'model-item';
+
+        const meta = document.createElement('div');
+        meta.className = 'model-meta';
+
+        const label = document.createElement('div');
+        label.className = 'model-label';
+        label.textContent = model.label;
+
+        const id = document.createElement('div');
+        id.className = 'model-id';
+        id.textContent = model.id;
+
+        meta.appendChild(label);
+        meta.appendChild(id);
+
+        const controls = document.createElement('div');
+        controls.className = 'model-controls';
+
+        const upButton = document.createElement('button');
+        upButton.type = 'button';
+        upButton.className = 'model-move-button';
+        upButton.textContent = '↑';
+        upButton.disabled = index === 0;
+        upButton.setAttribute('aria-label', `${model.label} を上へ`);
+
+        const downButton = document.createElement('button');
+        downButton.type = 'button';
+        downButton.className = 'model-move-button';
+        downButton.textContent = '↓';
+        downButton.disabled = index === currentModelOrder.length - 1;
+        downButton.setAttribute('aria-label', `${model.label} を下へ`);
+
+        upButton.addEventListener('click', async () => {
+          if (index <= 0) return;
+          const next = currentModelOrder.slice();
+          const [item] = next.splice(index, 1);
+          next.splice(index - 1, 0, item);
+          currentModelOrder = next;
+          renderModelOrder();
+          await saveModelOrder(next);
+        });
+
+        downButton.addEventListener('click', async () => {
+          if (index >= currentModelOrder.length - 1) return;
+          const next = currentModelOrder.slice();
+          const [item] = next.splice(index, 1);
+          next.splice(index + 1, 0, item);
+          currentModelOrder = next;
+          renderModelOrder();
+          await saveModelOrder(next);
+        });
+
+        controls.appendChild(upButton);
+        controls.appendChild(downButton);
+
+        li.appendChild(meta);
+        li.appendChild(controls);
+        modelPriorityList.appendChild(li);
+      });
+    }
+
+    if (resetModelPriorityButton) {
+      resetModelPriorityButton.addEventListener('click', async () => {
+        const defaultOrder = Array.from(GEMINI_DEFAULT_MODEL_ORDER);
+        currentModelOrder = defaultOrder;
+        renderModelOrder();
+        await saveModelOrder(defaultOrder);
+        showStatus('モデル順位をデフォルトに戻しました。', 'success');
+      });
+    }
+
+    loadModelOrder();
+	  
     /**
      * Gemini APIを使用してAPIキーの有効性を検証します。
      * @param {string} apiKey - 検証するAPIキー
