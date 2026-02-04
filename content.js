@@ -53,6 +53,11 @@
             border-color: #ccc;
             color: #333;
         }
+
+        .gemini-btn-cancel:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
         
         .gemini-close-btn {
             color: #666;
@@ -62,6 +67,23 @@
             color: #000;
         }
         
+        /* スコープを限定したチャットバブル */
+        .gemini-dialog .chat-bubble-ai {
+            background-color: #fff;
+            border: 1px solid #e0e0e0;
+            color: #333;
+        }
+
+        .gemini-dialog .chat-bubble-user {
+            background-color: #007bff;
+            color: white;
+        }
+        
+        .gemini-dialog .chat-bubble-loading {
+            background-color: #f5f5f5;
+            color: #333;
+        }
+
         /* ダークモード */
         @media (prefers-color-scheme: dark) {
             .gemini-dialog {
@@ -127,13 +149,13 @@
             }
             
             /* AIメッセージバブルをダークモード対応 */
-            .chat-bubble-ai {
+            .gemini-dialog .chat-bubble-ai {
                 background-color: #333 !important;
                 border-color: #555 !important;
                 color: #e0e0e0 !important;
             }
             
-            .chat-bubble-ai textarea {
+            .gemini-dialog .chat-bubble-ai textarea {
                 color: #e0e0e0 !important;
             }
             
@@ -145,6 +167,11 @@
             
             .gemini-send-btn:hover {
                 background-color: #4a4a4a !important;
+            }
+
+            .gemini-send-btn:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
             }
             
             .gemini-copy-btn {
@@ -221,18 +248,8 @@ document.addEventListener("mousedown", (event) => {
 }, true);
 
 // background.jsに右クリックされた要素の情報を渡す
-chrome.runtime.onConnect.addListener(port => {
-    if (port.name === "context-menu") {
-        port.onMessage.addListener(msg => {
-            if (msg.request === "getTargetElementId" && lastRightClickedElement) {
-                if (!lastRightClickedElement.id) {
-                    lastRightClickedElement.id = `gemini-alt-target-${Date.now()}`;
-                }
-                port.postMessage({ targetElementId: lastRightClickedElement.id });
-            }
-        });
-    }
-});
+// background.jsに右クリックされた要素の情報を渡す処理は削除（未使用のため）
+// 以前の chrome.runtime.onConnect 処理はここで削除されました。
 
 // --- メッセージハンドラ ---
 
@@ -250,7 +267,12 @@ function handleUpdateAltText(message) {
     if (dialog && dialog.dataset.imageSrc === message.imageUrl) {
         // 同じ画像に対する応答（再生成など）であれば追記
         const loadingBubble = dialog.querySelector('.chat-bubble-loading');
-        if (loadingBubble) loadingBubble.remove();
+        if (loadingBubble) {
+            // 親のwrapperごと削除する (修正: 余白が残らないように)
+            const wrapper = loadingBubble.closest('.gemini-chat-row');
+            if (wrapper) wrapper.remove();
+            else loadingBubble.remove(); // フォールバック
+        }
         addMessageToChat(message.altText, 'ai');
         toggleDialogInputs(dialog, true);
     } else {
@@ -340,7 +362,8 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
         border: '1px solid #ddd', borderRadius: '12px',
         boxShadow: '0 8px 25px rgba(0,0,0,0.2)', width: '550px', display: 'flex',
         flexDirection: 'column', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        maxHeight: '90vh', overflowY: 'auto'
+        maxHeight: '85vh', // 少し高さを下げる
+        overflow: 'hidden' // ダイアログ自体はスクロールさせない（中身をスクロール）
     });
 
     const header = document.createElement('div');
@@ -376,7 +399,13 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     const chatHistory = document.createElement('div');
     chatHistory.id = 'gemini-chat-history';
     chatHistory.className = 'gemini-chat-bg';
-    Object.assign(chatHistory.style, { overflow: 'visible', padding: '15px 20px', flexGrow: '1', background: '#f5f5f5' });
+    Object.assign(chatHistory.style, { 
+        overflowY: 'auto', // ここをスクロールさせる
+        padding: '15px 20px', 
+        flexGrow: '1', 
+        background: '#f5f5f5',
+        minHeight: '200px'
+    });
 
     const inputArea = document.createElement('div');
     inputArea.className = 'gemini-input-area';
@@ -483,6 +512,7 @@ function addMessageToChat(text, sender) {
     if (!chatHistory) return;
 
     const wrapper = document.createElement('div');
+    wrapper.classList.add('gemini-chat-row');
     Object.assign(wrapper.style, {
         display: sender === 'ai' ? 'grid' : 'flex',
         gridTemplateColumns: sender === 'ai' ? '1fr auto' : 'initial',
@@ -513,9 +543,10 @@ function addMessageToChat(text, sender) {
         Object.assign(textArea.style, {
             width: '100%', minHeight: 'fit-content', padding: '0',
             border: 'none', borderRadius: '0', resize: 'none',
-            background: 'transparent', color: '#000', margin: '0',
+            background: 'transparent', color: 'inherit', margin: '0', // color: 'inherit' に変更して親の色を引き継ぐ
             overflow: 'hidden', boxSizing: 'border-box', fontFamily: 'inherit',
-            fontSize: 'inherit', lineHeight: 'inherit', outline: 'none'
+            fontSize: 'inherit', lineHeight: 'inherit', outline: 'none',
+            boxShadow: 'none', appearance: 'none', '-webkit-appearance': 'none' // 追加: 完全にスタイルを消す
         });
         textArea.value = text;
 
@@ -640,12 +671,25 @@ function fallbackCopyTextToClipboard(text, buttonElement) {
 }
 
 function toggleDialogInputs(dialog, enabled) {
-    dialog.querySelector('#gemini-instruction-input').disabled = !enabled;
-    dialog.querySelectorAll('button').forEach(btn => btn.disabled = !enabled);
+    const inputField = dialog.querySelector('#gemini-instruction-input');
+    const sendButton = dialog.querySelector('.gemini-send-btn');
+    
+    if (inputField) {
+        inputField.disabled = !enabled;
+        // 入力中はプレースホルダーを変えるなどしても良いが、今回はdisabledのみ
+    }
+    
+    if (sendButton) {
+        sendButton.disabled = !enabled;
+        sendButton.style.opacity = enabled ? '1' : '0.5';
+        sendButton.style.cursor = enabled ? 'pointer' : 'not-allowed';
+    }
+    
+    // キャンセルボタンやコピーボタンは無効化しない（ユーザビリティ向上）
 }
 
 function findImageElement(imageUrl) {
-    return Array.from(document.querySelectorAll('img')).find(img => img.src === imageUrl);
+    return Array.from(document.querySelectorAll('img')).find(img => img.src === imageUrl || img.currentSrc === imageUrl);
 }
 
 function handleError(imageElement, message) {
