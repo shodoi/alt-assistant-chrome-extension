@@ -460,7 +460,8 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     sendButton.onclick = performSend;
 
     instructionInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
+        // IME変換中は送信しない
+        if (e.key === 'Enter' && !e.isComposing) {
             e.preventDefault();
             performSend();
         }
