@@ -5,8 +5,8 @@
 
 const GEMINI_MODEL_DEFINITIONS = Object.freeze([
   Object.freeze({ 
-    id: 'gemini-3-flash-preview', 
-    label: '3.0 Flash Preview',
+    id: 'gemini-3.1-flash-lite-preview', 
+    label: '3.1 Flash Lite Preview',
     desc: '最新世代の高速モデル。実験的な機能を含みます。',
     speed: 5,
     quality: 4
@@ -26,8 +26,8 @@ const GEMINI_MODEL_DEFINITIONS = Object.freeze([
     quality: 5
   }),
   Object.freeze({ 
-    id: 'gemini-3-pro-preview', 
-    label: '3.0 Pro Preview',
+    id: 'gemini-3.1-pro-preview', 
+    label: '3.1 Pro Preview',
     desc: '最新世代の高性能モデル。最高の推論能力を持ちます。',
     speed: 1,
     quality: 5
