@@ -5,25 +5,11 @@
 
 const GEMINI_MODEL_DEFINITIONS = Object.freeze([
   Object.freeze({ 
-    id: 'gemini-3.1-flash-lite-preview', 
-    label: '3.1 Flash Lite Preview',
-    desc: '最新世代の高速モデル。実験的な機能を含みます。',
+    id: 'gemini-3.1-flash-lite', 
+    label: '3.1 Flash Lite',
+    desc: '最新世代の高速モデル。',
     speed: 5,
     quality: 4
-  }),
-  Object.freeze({ 
-    id: 'gemini-2.5-flash', 
-    label: '2.5 Flash',
-    desc: '高速かつ高性能。幅広いタスクに対応するバランス型。',
-    speed: 4,
-    quality: 4
-  }),
-  Object.freeze({ 
-    id: 'gemini-2.5-pro', 
-    label: '2.5 Pro',
-    desc: '複雑な推論タスクに最適。最高品質のモデルです。',
-    speed: 2,
-    quality: 5
   }),
   Object.freeze({ 
     id: 'gemini-3.1-pro-preview', 
@@ -32,13 +18,7 @@ const GEMINI_MODEL_DEFINITIONS = Object.freeze([
     speed: 1,
     quality: 5
   }),
-  Object.freeze({ 
-    id: 'gemini-2.5-flash-lite', 
-    label: '2.5 Flash-Lite',
-    desc: '最速・最低コスト。単純なタスクに最適です。',
-    speed: 5,
-    quality: 3
-  }),
+
 ]);
 
 const GEMINI_MODEL_BY_ID = new Map(GEMINI_MODEL_DEFINITIONS.map((model) => [model.id, model]));
