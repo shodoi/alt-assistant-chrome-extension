@@ -5,9 +5,16 @@
 
 const GEMINI_MODEL_DEFINITIONS = Object.freeze([
   Object.freeze({ 
+    id: 'gemini-3.5-flash', 
+    label: '3.5 Flash',
+    desc: '高速かつ高性能な最新世代モデル。',
+    speed: 4,
+    quality: 4
+  }),
+  Object.freeze({ 
     id: 'gemini-3.1-flash-lite', 
     label: '3.1 Flash Lite',
-    desc: '最新世代の高速モデル。',
+    desc: '高速モデル。',
     speed: 5,
     quality: 4
   }),
@@ -18,7 +25,6 @@ const GEMINI_MODEL_DEFINITIONS = Object.freeze([
     speed: 1,
     quality: 5
   }),
-
 ]);
 
 const GEMINI_MODEL_BY_ID = new Map(GEMINI_MODEL_DEFINITIONS.map((model) => [model.id, model]));
