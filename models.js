@@ -5,8 +5,8 @@
 
 const GEMINI_MODEL_DEFINITIONS = Object.freeze([
   Object.freeze({ 
-    id: 'gemini-3.5-flash', 
-    label: '3.5 Flash',
+    id: 'gemini-3.7-flash', 
+    label: '3.7 Flash',
     desc: '高速かつ高性能な最新世代モデル。',
     speed: 4,
     quality: 4
