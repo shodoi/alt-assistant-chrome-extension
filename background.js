@@ -123,6 +123,9 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
 async function generateAltTextWithFallback(imageUrl, promptText, tabId, frameId) {
     let lastError = null;
 
+    // フォールバックループ前に画像を一度だけ取得・最適化（重複フェッチ・多重エンコードを防止）
+    const preparedImage = await prepareOptimizedImage(imageUrl);
+
     const modelPriorityList = await getModelPriorityList();
 
     for (const modelInfo of modelPriorityList) {
@@ -136,7 +139,7 @@ async function generateAltTextWithFallback(imageUrl, promptText, tabId, frameId)
 
             // 生成試行
             console.log(`Attempting generation with ${modelInfo.id}...`);
-            const altText = await generateAltTextWithGemini(imageUrl, modelInfo.id, promptText);
+            const altText = await generateAltTextWithGemini(preparedImage, modelInfo.id, promptText);
             
             // 成功したらリターン
             return {
@@ -302,27 +305,116 @@ function bufferToBase64(buffer) {
 }
 
 /**
- * Gemini APIを呼び出してAltテキストを生成するコア関数。
- * @param {string} imageUrl - 対象の画像URL
- * @param {string} model - 使用するモデルID
- * @param {string} promptText - 指示プロンプト
- * @returns {Promise<string>} 生成されたAltテキスト
+ * 画像Blobを適切な解像度にリサイズしJPEG圧縮する
+ * 
+ * サービスワーカー（Service Worker）環境では DOM の HTMLImageElement や HTMLCanvasElement が
+ * 利用できないため、createImageBitmap と OffscreenCanvas を用いて処理する。
+ * 高解像度（4K等）の画像をそのまま送信すると転送量やAPIペイロード（payload）が
+ * 肥大化しレイテンシが増大するため、長辺を最大1536pxに制限する。
+ *
+ * @param {Blob} originalBlob - 元画像のBlobオブジェクト
+ * @param {number} [maxDimension=1536] - 許容する長辺の最大ピクセルサイズ
+ * @returns {Promise<{ blob: Blob, mimeType: string }>} 最適化されたBlobとMIMEタイプ
  */
-async function generateAltTextWithGemini(imageUrl, model, promptText) {
-    const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
-    if (!geminiApiKey) {
-        throw new Error("APIキーが設定されていません。拡張機能のオプションページで設定してください。");
+async function optimizeImageBlob(originalBlob, maxDimension = 1536) {
+    // ベクター画像（SVG）や空データはラスタライズ・圧縮処理をバイパスする
+    if (originalBlob.type === 'image/svg+xml' || originalBlob.size === 0) {
+        return { blob: originalBlob, mimeType: originalBlob.type || 'image/jpeg' };
     }
 
+    try {
+        const imageBitmap = await createImageBitmap(originalBlob);
+        const { width, height } = imageBitmap;
+
+        // 長辺が上限以下かつファイルサイズが1MB未満なら、再エンコードによる画質劣化を避けるためそのまま利用
+        const MAX_UNCOMPRESSED_SIZE = 1024 * 1024;
+        if (width <= maxDimension && height <= maxDimension && originalBlob.size <= MAX_UNCOMPRESSED_SIZE) {
+            imageBitmap.close();
+            return { blob: originalBlob, mimeType: originalBlob.type || 'image/jpeg' };
+        }
+
+        // アスペクト比（aspect ratio）を維持したリサイズ後寸法の計算
+        let targetWidth = width;
+        let targetHeight = height;
+        if (width > maxDimension || height > maxDimension) {
+            if (width > height) {
+                targetWidth = maxDimension;
+                targetHeight = Math.round((height * maxDimension) / width);
+            } else {
+                targetHeight = maxDimension;
+                targetWidth = Math.round((width * maxDimension) / height);
+            }
+        }
+
+        // オフスクリーンキャンバス（OffscreenCanvas）で縮小描画
+        const canvas = new OffscreenCanvas(targetWidth, targetHeight);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(imageBitmap, 0, 0, targetWidth, targetHeight);
+        imageBitmap.close(); // メモリリーク防止のためビットマップリソースを即座に解放
+
+        // Geminiの入力として十分な画質を保ちつつファイルサイズを極小化するため JPEG (quality 0.85) で出力
+        const resizedBlob = await canvas.convertToBlob({
+            type: 'image/jpeg',
+            quality: 0.85
+        });
+
+        return { blob: resizedBlob, mimeType: 'image/jpeg' };
+    } catch (err) {
+        // 未対応の画像フォーマット（アニメーション等）でエラーが出た場合は元Blobへ安全にフォールバック
+        console.warn('画像リサイズ処理をスキップし、元画像を使用します:', err);
+        return { blob: originalBlob, mimeType: originalBlob.type || 'image/jpeg' };
+    }
+}
+
+/**
+ * 画像URLを取得・最適化し、API送信用の Base64 文字列と MIME タイプを生成する
+ * 
+ * フォールバック処理で複数モデルへ順次問い合わせる際、モデル切り替えごとに
+ * 重複して fetch や画像圧縮を行わないよう、共通処理としてキャッシュ可能な形式で準備する。
+ *
+ * @param {string} imageUrl - 取得対象の画像URL
+ * @returns {Promise<{ base64Image: string, mimeType: string }>} 最適化済み画像データ
+ */
+async function prepareOptimizedImage(imageUrl) {
     const response = await fetch(imageUrl);
     if (!response.ok) {
         throw new Error(`画像の取得に失敗: ${response.status} ${response.statusText}`);
     }
 
     const blob = await response.blob();
-    const arrayBuffer = await blob.arrayBuffer();
+    const { blob: optimizedBlob, mimeType } = await optimizeImageBlob(blob);
+    const arrayBuffer = await optimizedBlob.arrayBuffer();
     const base64Image = bufferToBase64(arrayBuffer);
-    const mimeType = blob.type || 'image/jpeg';
+
+    return { base64Image, mimeType };
+}
+
+/**
+ * Gemini APIを呼び出してAltテキストを生成するコア関数。
+ * @param {string|{ base64Image: string, mimeType: string }} imageInput - 対象の画像URLまたは最適化済み画像データ
+ * @param {string} model - 使用するモデルID
+ * @param {string} promptText - 指示プロンプト
+ * @returns {Promise<string>} 生成されたAltテキスト
+ */
+async function generateAltTextWithGemini(imageInput, model, promptText) {
+    const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
+    if (!geminiApiKey) {
+        throw new Error("APIキーが設定されていません。拡張機能のオプションページで設定してください。");
+    }
+
+    let base64Image;
+    let mimeType;
+
+    if (typeof imageInput === 'string') {
+        const prepared = await prepareOptimizedImage(imageInput);
+        base64Image = prepared.base64Image;
+        mimeType = prepared.mimeType;
+    } else if (imageInput && imageInput.base64Image) {
+        base64Image = imageInput.base64Image;
+        mimeType = imageInput.mimeType;
+    } else {
+        throw new Error("無効な画像データが指定されました。");
+    }
 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     const payload = {
