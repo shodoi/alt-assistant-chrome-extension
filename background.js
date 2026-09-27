@@ -285,45 +285,74 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 
 
 /**
+ * ArrayBuffer を Base64 文字列へ安全かつ高速に変換するヘルパー (Service Worker 対応)
+ * @param {ArrayBuffer} buffer
+ * @returns {string}
+ */
+function bufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const len = bytes.byteLength;
+    const CHUNK_SIZE = 8192;
+    for (let i = 0; i < len; i += CHUNK_SIZE) {
+        const chunk = bytes.subarray(i, i + CHUNK_SIZE);
+        binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
+}
+
+/**
  * Gemini APIを呼び出してAltテキストを生成するコア関数。
+ * @param {string} imageUrl - 対象の画像URL
+ * @param {string} model - 使用するモデルID
+ * @param {string} promptText - 指示プロンプト
+ * @returns {Promise<string>} 生成されたAltテキスト
  */
 async function generateAltTextWithGemini(imageUrl, model, promptText) {
-    return new Promise(async (resolve, reject) => {
-        try {
-            const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
-            if (!geminiApiKey) throw new Error("APIキーが設定されていません。拡張機能のオプションページで設定してください。");
+    const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
+    if (!geminiApiKey) {
+        throw new Error("APIキーが設定されていません。拡張機能のオプションページで設定してください。");
+    }
 
-            const response = await fetch(imageUrl);
-            if (!response.ok) throw new Error(`画像の取得に失敗: ${response.status} ${response.statusText}`);
-            const blob = await response.blob();
+    const response = await fetch(imageUrl);
+    if (!response.ok) {
+        throw new Error(`画像の取得に失敗: ${response.status} ${response.statusText}`);
+    }
 
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-                try {
-                    const base64Image = reader.result.split(',')[1];
-                    const mimeType = blob.type;
-                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-                    const payload = { contents: [{ parts: [{ text: promptText }, { inline_data: { mime_type: mimeType, data: base64Image } }] }] };
+    const blob = await response.blob();
+    const arrayBuffer = await blob.arrayBuffer();
+    const base64Image = bufferToBase64(arrayBuffer);
+    const mimeType = blob.type || 'image/jpeg';
 
-                    const apiResponse = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiApiKey }, body: JSON.stringify(payload) });
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    const payload = {
+        contents: [{
+            parts: [
+                { text: promptText },
+                { inline_data: { mime_type: mimeType, data: base64Image } }
+            ]
+        }]
+    };
 
-                    if (!apiResponse.ok) {
-                        const errorData = await apiResponse.json();
-                        // エラーメッセージを詳細に含める
-                        throw new Error(errorData.error?.message || apiResponse.statusText);
-                    }
-
-                    const data = await apiResponse.json();
-                    const altText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                    if (altText) {
-                        resolve(altText);
-                    } else {
-                        throw new Error("APIからの応答形式が予期しないものでした。");
-                    }
-                } catch (e) { reject(e); }
-            };
-            reader.onerror = () => reject(new Error("画像の読み込み中にエラーが発生しました。"));
-            reader.readAsDataURL(blob);
-        } catch (e) { reject(e); }
+    const apiResponse = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': geminiApiKey
+        },
+        body: JSON.stringify(payload)
     });
+
+    if (!apiResponse.ok) {
+        const errorData = await apiResponse.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || apiResponse.statusText);
+    }
+
+    const data = await apiResponse.json();
+    const altText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (altText) {
+        return altText.trim();
+    }
+    throw new Error("APIからの応答形式が予期しないものでした。");
 }
+
