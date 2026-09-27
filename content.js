@@ -285,6 +285,111 @@ function handleUpdateAltText(message) {
 
 // --- UI生成・操作関数 ---
 
+/**
+ * ダイアログ要素に WAI-ARIA 属性、Focus Trap、Escapeキー終了、フォーカス復帰を付与するヘルパー
+ * @param {HTMLElement} dialog - 対象のダイアログ要素
+ * @param {object} options
+ * @param {HTMLElement} [options.titleElement] - aria-labelledby に紐付けるタイトル要素
+ * @param {Function} [options.onClose] - ダイアログクローズ時のコールバック処理
+ * @param {HTMLElement} [options.initialFocusElement] - 初期フォーカスを当てる要素
+ * @param {HTMLElement} [options.restoreFocusElement] - クローズ後にフォーカスを復帰する要素
+ * @returns {Function} cleanup - イベントリスナーを破棄するクリーンアップ関数
+ */
+function attachDialogAccessibility(dialog, options = {}) {
+    const { titleElement, onClose, initialFocusElement, restoreFocusElement } = options;
+
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+
+    if (titleElement) {
+        if (!titleElement.id) {
+            titleElement.id = 'gemini-dialog-title-' + Math.random().toString(36).substring(2, 9);
+        }
+        dialog.setAttribute('aria-labelledby', titleElement.id);
+    }
+
+    // フォーカス復帰用の要素を記録
+    const elementToRestore = restoreFocusElement || document.activeElement || lastRightClickedElement;
+    let isCleanedUp = false;
+
+    const cleanup = () => {
+        if (isCleanedUp) return;
+        isCleanedUp = true;
+        document.removeEventListener('keydown', handleKeyDown, true);
+        if (elementToRestore && typeof elementToRestore.focus === 'function') {
+            try {
+                elementToRestore.focus();
+            } catch (e) {
+                // 要素がすでにDOMツリーから削除されている場合などは無視
+            }
+        }
+    };
+
+    const handleKeyDown = (e) => {
+        if (!document.contains(dialog)) {
+            cleanup();
+            return;
+        }
+
+        // Escape キーで閉じる (IME変換中を除く)
+        if (e.key === 'Escape' && !e.isComposing) {
+            e.preventDefault();
+            e.stopPropagation();
+            cleanup();
+            if (typeof onClose === 'function') {
+                onClose();
+            } else {
+                dialog.remove();
+            }
+            return;
+        }
+
+        // Tab キーのフォーカストラップ
+        if (e.key === 'Tab') {
+            const focusableElements = Array.from(dialog.querySelectorAll(
+                'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            )).filter(el => el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
+
+            if (focusableElements.length === 0) {
+                e.preventDefault();
+                return;
+            }
+
+            const firstElement = focusableElements[0];
+            const lastElement = focusableElements[focusableElements.length - 1];
+
+            if (e.shiftKey) {
+                if (document.activeElement === firstElement || !dialog.contains(document.activeElement)) {
+                    e.preventDefault();
+                    lastElement.focus();
+                }
+            } else {
+                if (document.activeElement === lastElement || !dialog.contains(document.activeElement)) {
+                    e.preventDefault();
+                    firstElement.focus();
+                }
+            }
+        }
+    };
+
+    document.addEventListener('keydown', handleKeyDown, true);
+
+    // 初期フォーカス設定
+    setTimeout(() => {
+        if (!document.contains(dialog)) return;
+        if (initialFocusElement && typeof initialFocusElement.focus === 'function') {
+            initialFocusElement.focus();
+        } else {
+            const firstFocusable = dialog.querySelector(
+                'textarea:not([disabled]), input:not([disabled]), button:not([disabled])'
+            );
+            if (firstFocusable) firstFocusable.focus();
+        }
+    }, 0);
+
+    return cleanup;
+}
+
 function showInstructionDialog(onSubmit) {
     const existingDialog = document.getElementById('gemini-instruction-dialog');
     if (existingDialog) existingDialog.remove();
@@ -301,7 +406,7 @@ function showInstructionDialog(onSubmit) {
     });
 
     dialog.innerHTML = `
-        <h3 class="gemini-dialog-title" style="margin-top: 0; margin-bottom: 16px; font-size: 18px; font-weight: 600;">Geminiで画像に指示</h3>
+        <h3 id="gemini-instruction-dialog-title" class="gemini-dialog-title" style="margin-top: 0; margin-bottom: 16px; font-size: 18px; font-weight: 600;">Geminiで画像に指示</h3>
         <p class="gemini-dialog-description" style="margin: 0 0 12px; font-size: 14px;">画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。</p>
         <textarea id="gemini-prompt-textarea" class="gemini-dialog-textarea" style="width: calc(100% - 20px); min-height: 100px; margin-bottom: 16px; padding: 8px; border: 1px solid; border-radius: 4px; font-size: 14px; resize: vertical;" autocomplete="off">この画像の代替テキストを簡潔に日本語で生成してください。</textarea>
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
@@ -314,11 +419,26 @@ function showInstructionDialog(onSubmit) {
 
     document.body.appendChild(dialog);
 
+    const titleElement = document.getElementById('gemini-instruction-dialog-title');
     const textArea = document.getElementById('gemini-prompt-textarea');
     textArea.focus();
     textArea.select();
 
-    const closeDialog = () => dialog.remove();
+    let cleanupA11y = null;
+    const closeDialog = () => {
+        if (cleanupA11y) cleanupA11y();
+        dialog.remove();
+    };
+
+    cleanupA11y = attachDialogAccessibility(dialog, {
+        titleElement: titleElement,
+        onClose: () => {
+            onSubmit(null);
+            dialog.remove();
+        },
+        initialFocusElement: textArea,
+        restoreFocusElement: lastRightClickedElement
+    });
 
     const cancelButton = document.getElementById('cancel-instruction-dialog');
     const submitButton = document.getElementById('submit-auto-model');
@@ -379,6 +499,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     });
 
     const title = document.createElement('h3');
+    title.id = 'gemini-alt-dialog-title';
     title.className = 'gemini-dialog-title';
     title.textContent = 'Altテキスト生成チャット' + (modelLabel ? ` (${modelLabel})` : '');
     Object.assign(title.style, { margin: '0', fontSize: '16px', fontWeight: '600' });
@@ -387,15 +508,21 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     // Close Button (Moved to header)
     const closeButton = document.createElement('button');
     closeButton.className = 'gemini-close-btn';
+    closeButton.setAttribute('aria-label', 'ダイアログを閉じる');
     closeButton.innerHTML = '&times;';
     Object.assign(closeButton.style, {
         background: 'none', border: 'none', fontSize: '24px',
         lineHeight: '1', cursor: 'pointer', padding: '0 4px',
         marginLeft: '10px'
     });
-    closeButton.onclick = () => dialog.remove();
+    let cleanupA11y = null;
+    closeButton.onclick = () => {
+        if (cleanupA11y) cleanupA11y();
+        dialog.remove();
+    };
     // ホバー効果はCSSで制御されるため、イベントリスナーは削除
     header.appendChild(closeButton);
+
 
     const chatHistory = document.createElement('div');
     chatHistory.id = 'gemini-chat-history';
@@ -505,8 +632,16 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     dialog.appendChild(inputArea);
     document.body.appendChild(dialog);
 
+    cleanupA11y = attachDialogAccessibility(dialog, {
+        titleElement: title,
+        onClose: () => dialog.remove(),
+        initialFocusElement: instructionInput,
+        restoreFocusElement: imageElement
+    });
+
     addMessageToChat(initialAltText, 'ai');
 }
+
 
 function addMessageToChat(text, sender) {
     const chatHistory = document.getElementById('gemini-chat-history');
@@ -802,6 +937,7 @@ function showRateLimitDialog(modelLabel) {
     });
 
     const title = document.createElement('h3');
+    title.id = 'gemini-rate-limit-title';
     title.textContent = '⚠️ レート制限に達しました';
     title.style.margin = '0 0 12px 0';
     title.style.color = '#856404';
@@ -821,12 +957,23 @@ function showRateLimitDialog(modelLabel) {
         padding: '8px 16px', backgroundColor: '#ffc107', border: 'none', 
         borderRadius: '4px', cursor: 'pointer', color: '#212529', fontWeight: 'bold' 
     });
-    closeBtn.onclick = () => dialog.remove();
+    let cleanupA11y = null;
+    closeBtn.onclick = () => {
+        if (cleanupA11y) cleanupA11y();
+        dialog.remove();
+    };
     
     btnContainer.appendChild(closeBtn);
     dialog.appendChild(btnContainer);
 
     document.body.appendChild(dialog);
+
+    cleanupA11y = attachDialogAccessibility(dialog, {
+        titleElement: title,
+        onClose: () => dialog.remove(),
+        initialFocusElement: closeBtn,
+        restoreFocusElement: lastRightClickedElement
+    });
 }
 
 function showApiKeyErrorDialog(modelLabel) {
@@ -844,6 +991,7 @@ function showApiKeyErrorDialog(modelLabel) {
     });
 
     const title = document.createElement('h3');
+    title.id = 'gemini-apikey-error-title';
     title.textContent = '🚫 APIキーエラー';
     title.style.margin = '0 0 12px 0';
     title.style.color = '#721c24';
@@ -863,10 +1011,22 @@ function showApiKeyErrorDialog(modelLabel) {
         padding: '8px 16px', backgroundColor: '#dc3545', border: 'none', 
         borderRadius: '4px', cursor: 'pointer', color: '#fff', fontWeight: 'bold' 
     });
-    closeBtn.onclick = () => dialog.remove();
+    let cleanupA11y = null;
+    closeBtn.onclick = () => {
+        if (cleanupA11y) cleanupA11y();
+        dialog.remove();
+    };
 
     btnContainer.appendChild(closeBtn);
     dialog.appendChild(btnContainer);
 
     document.body.appendChild(dialog);
+
+    cleanupA11y = attachDialogAccessibility(dialog, {
+        titleElement: title,
+        onClose: () => dialog.remove(),
+        initialFocusElement: closeBtn,
+        restoreFocusElement: lastRightClickedElement
+    });
 }
+
