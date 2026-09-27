@@ -1,192 +1,247 @@
 // content.js
 
-// --- ダークモード対応CSSスタイルシートの追加 ---
-(function() {
-    if (document.getElementById('gemini-dark-mode-styles')) return;
+// --- スタイル定義 (Shadow DOM 内部用) ---
+const GEMINI_SHADOW_STYLES = `
+    /* ライトモード（デフォルト） */
+    .gemini-dialog {
+        background-color: #fff;
+        border-color: #ccc;
+        color: #333;
+        box-sizing: border-box;
+    }
+    .gemini-dialog * {
+        box-sizing: border-box;
+    }
     
-    const style = document.createElement('style');
-    style.id = 'gemini-dark-mode-styles';
-    style.textContent = `
-        /* ライトモード（デフォルト） */
+    .gemini-dialog-header {
+        border-bottom-color: #eee;
+        background-color: #f9f9f9;
+    }
+    
+    .gemini-dialog-title {
+        color: #222;
+    }
+    
+    .gemini-dialog-description {
+        color: #666;
+    }
+    
+    .gemini-dialog-textarea {
+        background-color: #fff;
+        border-color: #ddd;
+        color: #333;
+    }
+    
+    .gemini-chat-bg {
+        background-color: #f5f5f5;
+    }
+    
+    .gemini-input-area {
+        background-color: #f9f9f9;
+        border-top-color: #eee;
+    }
+    
+    .gemini-input-field {
+        background-color: #fff;
+        border-color: #ddd;
+        color: #333;
+    }
+    
+    .gemini-btn-cancel {
+        background-color: #f0f0f0;
+        border-color: #ccc;
+        color: #333;
+    }
+
+    .gemini-btn-cancel:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+    
+    .gemini-close-btn {
+        color: #666;
+    }
+    
+    .gemini-close-btn:hover {
+        color: #000;
+    }
+    
+    /* チャットバブル */
+    .chat-bubble-ai {
+        background-color: #fff;
+        border: 1px solid #e0e0e0;
+        color: #333;
+    }
+
+    .chat-bubble-user {
+        background-color: #007bff;
+        color: white;
+    }
+    
+    .chat-bubble-loading {
+        background-color: #f5f5f5;
+        color: #333;
+    }
+
+    /* スピナーアニメーション */
+    @keyframes gemini-spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    .gemini-spinner {
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-top: 2px solid #fff;
+        border-radius: 50%;
+        width: 14px;
+        height: 14px;
+        animation: gemini-spin 1s linear infinite;
+        display: inline-block;
+        vertical-align: middle;
+        margin-right: 8px;
+    }
+
+    /* ダークモード */
+    @media (prefers-color-scheme: dark) {
         .gemini-dialog {
-            background-color: #fff;
-            border-color: #ccc;
-            color: #333;
+            background-color: #1e1e1e;
+            border-color: #444;
+            color: #e0e0e0;
         }
         
         .gemini-dialog-header {
-            border-bottom-color: #eee;
-            background-color: #f9f9f9;
+            border-bottom-color: #444;
+            background-color: #252525;
         }
         
         .gemini-dialog-title {
-            color: #222;
+            color: #ffffff;
         }
         
         .gemini-dialog-description {
-            color: #666;
+            color: #d0d0d0;
         }
         
         .gemini-dialog-textarea {
-            background-color: #fff;
-            border-color: #ddd;
-            color: #333;
+            background-color: #1e1e1e;
+            border-color: #555;
+            color: #e0e0e0;
         }
         
         .gemini-chat-bg {
-            background-color: #f5f5f5;
+            background-color: #1e1e1e;
         }
         
         .gemini-input-area {
-            background-color: #f9f9f9;
-            border-top-color: #eee;
+            background-color: #2b2b2b;
+            border-top-color: #444;
         }
         
         .gemini-input-field {
-            background-color: #fff;
-            border-color: #ddd;
-            color: #333;
+            background-color: #3a3a3a;
+            border-color: #555;
+            color: #e0e0e0;
+        }
+        
+        .gemini-input-field::placeholder {
+            color: #888;
         }
         
         .gemini-btn-cancel {
-            background-color: #f0f0f0;
-            border-color: #ccc;
-            color: #333;
+            background-color: #3a3a3a;
+            border-color: #555;
+            color: #e0e0e0;
         }
-
-        .gemini-btn-cancel:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
+        
+        .gemini-btn-cancel:hover {
+            background-color: #4a4a4a;
         }
         
         .gemini-close-btn {
-            color: #666;
+            color: #b0b0b0;
         }
         
         .gemini-close-btn:hover {
-            color: #000;
+            color: #fff;
         }
         
-        /* スコープを限定したチャットバブル */
-        .gemini-dialog .chat-bubble-ai {
-            background-color: #fff;
-            border: 1px solid #e0e0e0;
-            color: #333;
-        }
-
-        .gemini-dialog .chat-bubble-user {
-            background-color: #007bff;
-            color: white;
+        .chat-bubble-ai {
+            background-color: #333 !important;
+            border-color: #555 !important;
+            color: #e0e0e0 !important;
         }
         
-        .gemini-dialog .chat-bubble-loading {
-            background-color: #f5f5f5;
-            color: #333;
+        .chat-bubble-ai textarea {
+            color: #e0e0e0 !important;
+        }
+        
+        .gemini-send-btn {
+            background-color: #3a3a3a !important;
+            color: #e0e0e0 !important;
+        }
+        
+        .gemini-send-btn:hover {
+            background-color: #4a4a4a !important;
         }
 
-        /* ダークモード */
-        @media (prefers-color-scheme: dark) {
-            .gemini-dialog {
-                background-color: #1e1e1e;
-                border-color: #444;
-                color: #e0e0e0;
-            }
-            
-            .gemini-dialog-header {
-                border-bottom-color: #444;
-                background-color: #252525;
-            }
-            
-            .gemini-dialog-title {
-                color: #ffffff;
-            }
-            
-            .gemini-dialog-description {
-                color: #d0d0d0;
-            }
-            
-            .gemini-dialog-textarea {
-                background-color: #1e1e1e;
-                border-color: #555;
-                color: #e0e0e0;
-            }
-            
-            .gemini-chat-bg {
-                background-color: #1e1e1e;
-            }
-            
-            .gemini-input-area {
-                background-color: #2b2b2b;
-                border-top-color: #444;
-            }
-            
-            .gemini-input-field {
-                background-color: #3a3a3a;
-                border-color: #555;
-                color: #e0e0e0;
-            }
-            
-            .gemini-input-field::placeholder {
-                color: #888;
-            }
-            
-            .gemini-btn-cancel {
-                background-color: #3a3a3a;
-                border-color: #555;
-                color: #e0e0e0;
-            }
-            
-            .gemini-btn-cancel:hover {
-                background-color: #4a4a4a;
-            }
-            
-            .gemini-close-btn {
-                color: #b0b0b0;
-            }
-            
-            .gemini-close-btn:hover {
-                color: #fff;
-            }
-            
-            /* AIメッセージバブルをダークモード対応 */
-            .gemini-dialog .chat-bubble-ai {
-                background-color: #333 !important;
-                border-color: #555 !important;
-                color: #e0e0e0 !important;
-            }
-            
-            .gemini-dialog .chat-bubble-ai textarea {
-                color: #e0e0e0 !important;
-            }
-            
-            /* ダークモード用のボタンスタイル */
-            .gemini-send-btn {
-                background-color: #3a3a3a !important;
-                color: #e0e0e0 !important;
-            }
-            
-            .gemini-send-btn:hover {
-                background-color: #4a4a4a !important;
-            }
-
-            .gemini-send-btn:disabled {
-                opacity: 0.5;
-                cursor: not-allowed;
-            }
-            
-            .gemini-copy-btn {
-                background-color: #3a3a3a !important;
-                border-color: #555 !important;
-                color: #e0e0e0 !important;
-            }
-            
-            .gemini-copy-btn:hover {
-                background-color: #4a4a4a !important;
-            }
+        .gemini-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
-    `;
-    document.head.appendChild(style);
-})();
+        
+        .gemini-copy-btn {
+            background-color: #3a3a3a !important;
+            border-color: #555 !important;
+            color: #e0e0e0 !important;
+        }
+        
+        .gemini-copy-btn:hover {
+            background-color: #4a4a4a !important;
+        }
+    }
+`;
+
+// --- Shadow DOM 管理 ---
+let shadowHostInstance = null;
+let shadowRootInstance = null;
+
+/**
+ * 拡張機能専用の Shadow Root を取得または初期化して返す
+ * @returns {ShadowRoot}
+ */
+function getShadowRoot() {
+    if (!shadowRootInstance || !document.contains(shadowHostInstance)) {
+        shadowHostInstance = document.getElementById('gemini-alt-assistant-host');
+        if (!shadowHostInstance) {
+            shadowHostInstance = document.createElement('div');
+            shadowHostInstance.id = 'gemini-alt-assistant-host';
+            Object.assign(shadowHostInstance.style, {
+                all: 'initial',
+                position: 'static',
+                zIndex: '2147483647',
+            });
+            (document.body || document.documentElement).appendChild(shadowHostInstance);
+        }
+
+        shadowRootInstance = shadowHostInstance.shadowRoot || shadowHostInstance.attachShadow({ mode: 'open' });
+
+        if (!shadowRootInstance.getElementById('gemini-shadow-styles')) {
+            const style = document.createElement('style');
+            style.id = 'gemini-shadow-styles';
+            style.textContent = GEMINI_SHADOW_STYLES;
+            shadowRootInstance.appendChild(style);
+        }
+    }
+    return shadowRootInstance;
+}
+
+/**
+ * Shadow Root 内から ID で要素を検索する
+ * @param {string} id
+ * @returns {HTMLElement|null}
+ */
+function getGeminiElement(id) {
+    return getShadowRoot().getElementById(id);
+}
 
 // --- グローバル変数 ---
 let lastRightClickedElement = null;
@@ -207,7 +262,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'updateModelStatus':
             const imageElementForStatus = findImageElement(message.imageUrl);
             if (imageElementForStatus) {
-                const dialog = document.getElementById('gemini-alt-dialog');
+                const dialog = getGeminiElement('gemini-alt-dialog');
                 // ダイアログが存在しない、または別の画像用のダイアログが表示されている場合はオーバーレイを表示
                 if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
                     showStatus(imageElementForStatus, message.statusText, "loading");
@@ -218,7 +273,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case "startAltTextGeneration":
             const imageElementForLoading = findImageElement(message.imageUrl);
             if (imageElementForLoading) {
-                const dialog = document.getElementById('gemini-alt-dialog');
+                const dialog = getGeminiElement('gemini-alt-dialog');
                 if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
                     showStatus(imageElementForLoading, `AIで生成を開始...`, "loading");
                 }
@@ -247,32 +302,27 @@ document.addEventListener("mousedown", (event) => {
     }
 }, true);
 
-// background.jsに右クリックされた要素の情報を渡す
-// background.jsに右クリックされた要素の情報を渡す処理は削除（未使用のため）
-// 以前の chrome.runtime.onConnect 処理はここで削除されました。
-
 // --- メッセージハンドラ ---
 
 function handleUpdateAltText(message) {
     const imageElement = findImageElement(message.imageUrl);
     if (!imageElement) return;
 
-    // Remove existing status from body if any
-    // message.imageUrl ではなく、特定した imageElement.src をキーにして削除する（showStatusで設定した値と合わせるため）
-    const existingStatus = document.querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
+    // Remove existing status from Shadow DOM if any
+    const existingStatus = getShadowRoot().querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
     if (existingStatus) {
         existingStatus.remove();
     }
 
-    const dialog = document.getElementById('gemini-alt-dialog');
+    const dialog = getGeminiElement('gemini-alt-dialog');
     if (dialog && dialog.dataset.imageSrc === message.imageUrl) {
         // 同じ画像に対する応答（再生成など）であれば追記
         const loadingBubble = dialog.querySelector('.chat-bubble-loading');
         if (loadingBubble) {
-            // 親のwrapperごと削除する (修正: 余白が残らないように)
+            // 親のwrapperごと削除する (余白が残らないように)
             const wrapper = loadingBubble.closest('.gemini-chat-row');
             if (wrapper) wrapper.remove();
-            else loadingBubble.remove(); // フォールバック
+            else loadingBubble.remove();
         }
         addMessageToChat(message.altText, 'ai');
         toggleDialogInputs(dialog, true);
@@ -281,6 +331,7 @@ function handleUpdateAltText(message) {
         showAltTextDialog(message.altText, imageElement, message.modelLabel, message.targetElementId);
     }
 }
+
 
 
 // --- UI生成・操作関数 ---
@@ -391,7 +442,7 @@ function attachDialogAccessibility(dialog, options = {}) {
 }
 
 function showInstructionDialog(onSubmit) {
-    const existingDialog = document.getElementById('gemini-instruction-dialog');
+    const existingDialog = getGeminiElement('gemini-instruction-dialog');
     if (existingDialog) existingDialog.remove();
 
     const dialog = document.createElement('div');
@@ -405,22 +456,68 @@ function showInstructionDialog(onSubmit) {
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     });
 
-    dialog.innerHTML = `
-        <h3 id="gemini-instruction-dialog-title" class="gemini-dialog-title" style="margin-top: 0; margin-bottom: 16px; font-size: 18px; font-weight: 600;">Geminiで画像に指示</h3>
-        <p class="gemini-dialog-description" style="margin: 0 0 12px; font-size: 14px;">画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。</p>
-        <textarea id="gemini-prompt-textarea" class="gemini-dialog-textarea" style="width: calc(100% - 20px); min-height: 100px; margin-bottom: 16px; padding: 8px; border: 1px solid; border-radius: 4px; font-size: 14px; resize: vertical;" autocomplete="off">この画像の代替テキストを簡潔に日本語で生成してください。</textarea>
-        <div style="display: flex; justify-content: flex-end; gap: 12px;">
-            <button id="cancel-instruction-dialog" class="gemini-btn-cancel" style="padding: 10px 20px; border-radius: 6px; border: 1px solid; cursor: pointer; font-size: 14px; transition: background-color 0.2s ease;">キャンセル</button>
-            <button id="submit-auto-model" style="padding: 10px 20px; border-radius: 6px; border: none; background-color: #007bff; color: white; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px; transition: background-color 0.2s ease;">
-                <span>✨</span> 生成開始 (Auto)
-            </button>
-        </div>
-    `;
+    const titleElement = document.createElement('h3');
+    titleElement.id = 'gemini-instruction-dialog-title';
+    titleElement.className = 'gemini-dialog-title';
+    titleElement.textContent = 'Geminiで画像に指示';
+    Object.assign(titleElement.style, {
+        marginTop: '0', marginBottom: '16px', fontSize: '18px', fontWeight: '600'
+    });
 
-    document.body.appendChild(dialog);
+    const description = document.createElement('p');
+    description.className = 'gemini-dialog-description';
+    description.textContent = '画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。';
+    Object.assign(description.style, { margin: '0 0 12px', fontSize: '14px' });
 
-    const titleElement = document.getElementById('gemini-instruction-dialog-title');
-    const textArea = document.getElementById('gemini-prompt-textarea');
+    const textArea = document.createElement('textarea');
+    textArea.id = 'gemini-prompt-textarea';
+    textArea.className = 'gemini-dialog-textarea';
+    textArea.value = 'この画像の代替テキストを簡潔に日本語で生成してください。';
+    textArea.setAttribute('autocomplete', 'off');
+    Object.assign(textArea.style, {
+        width: 'calc(100% - 20px)', minHeight: '100px', marginBottom: '16px',
+        padding: '8px', border: '1px solid #ddd', borderRadius: '4px',
+        fontSize: '14px', resize: 'vertical'
+    });
+
+    const btnContainer = document.createElement('div');
+    Object.assign(btnContainer.style, {
+        display: 'flex', justifyContent: 'flex-end', gap: '12px'
+    });
+
+    const cancelButton = document.createElement('button');
+    cancelButton.id = 'cancel-instruction-dialog';
+    cancelButton.className = 'gemini-btn-cancel';
+    cancelButton.textContent = 'キャンセル';
+    Object.assign(cancelButton.style, {
+        padding: '10px 20px', borderRadius: '6px', border: '1px solid #ccc',
+        cursor: 'pointer', fontSize: '14px', transition: 'background-color 0.2s ease'
+    });
+
+    const submitButton = document.createElement('button');
+    submitButton.id = 'submit-auto-model';
+    Object.assign(submitButton.style, {
+        padding: '10px 20px', borderRadius: '6px', border: 'none',
+        backgroundColor: '#007bff', color: 'white', cursor: 'pointer',
+        fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px',
+        transition: 'background-color 0.2s ease'
+    });
+    const sparkleSpan = document.createElement('span');
+    sparkleSpan.textContent = '✨';
+    const submitText = document.createTextNode(' 生成開始 (Auto)');
+    submitButton.appendChild(sparkleSpan);
+    submitButton.appendChild(submitText);
+
+    btnContainer.appendChild(cancelButton);
+    btnContainer.appendChild(submitButton);
+
+    dialog.appendChild(titleElement);
+    dialog.appendChild(description);
+    dialog.appendChild(textArea);
+    dialog.appendChild(btnContainer);
+
+    getShadowRoot().appendChild(dialog);
+
     textArea.focus();
     textArea.select();
 
@@ -439,9 +536,6 @@ function showInstructionDialog(onSubmit) {
         initialFocusElement: textArea,
         restoreFocusElement: lastRightClickedElement
     });
-
-    const cancelButton = document.getElementById('cancel-instruction-dialog');
-    const submitButton = document.getElementById('submit-auto-model');
 
     // フォーカス時のスタイル設定
     [cancelButton, submitButton].forEach(btn => {
@@ -471,7 +565,7 @@ function showInstructionDialog(onSubmit) {
 }
 
 function showAltTextDialog(initialAltText, imageElement, modelLabel, targetElementId) {
-    const existingDialog = document.getElementById('gemini-alt-dialog');
+    const existingDialog = getGeminiElement('gemini-alt-dialog');
     if (existingDialog) existingDialog.remove();
 
     const dialog = document.createElement('div');
@@ -509,7 +603,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     const closeButton = document.createElement('button');
     closeButton.className = 'gemini-close-btn';
     closeButton.setAttribute('aria-label', 'ダイアログを閉じる');
-    closeButton.innerHTML = '&times;';
+    closeButton.textContent = '×';
     Object.assign(closeButton.style, {
         background: 'none', border: 'none', fontSize: '24px',
         lineHeight: '1', cursor: 'pointer', padding: '0 4px',
@@ -569,6 +663,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     // Send Button (Icon)
     const sendButton = document.createElement('button');
     sendButton.className = 'gemini-send-btn';
+    sendButton.setAttribute('aria-label', '指示を送信');
     // Simple send icon SVG
     sendButton.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/></svg>`;
     Object.assign(sendButton.style, {
@@ -630,7 +725,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     dialog.appendChild(header);
     dialog.appendChild(chatHistory);
     dialog.appendChild(inputArea);
-    document.body.appendChild(dialog);
+    getShadowRoot().appendChild(dialog);
 
     cleanupA11y = attachDialogAccessibility(dialog, {
         titleElement: title,
@@ -644,8 +739,9 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
 
 
 function addMessageToChat(text, sender) {
-    const chatHistory = document.getElementById('gemini-chat-history');
+    const chatHistory = getGeminiElement('gemini-chat-history');
     if (!chatHistory) return;
+
 
     const wrapper = document.createElement('div');
     wrapper.classList.add('gemini-chat-row');
@@ -844,36 +940,9 @@ function handleError(imageElement, message) {
     }
 }
 
-// 共通のスタイル定義を注入 (スピナー用)
-function injectStyles() {
-    if (document.getElementById('gemini-alt-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'gemini-alt-styles';
-    style.textContent = `
-        @keyframes gemini-spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .gemini-spinner {
-            border: 2px solid rgba(255, 255, 255, 0.3);
-            border-top: 2px solid #fff;
-            border-radius: 50%;
-            width: 14px;
-            height: 14px;
-            animation: gemini-spin 1s linear infinite;
-            display: inline-block;
-            vertical-align: middle;
-            margin-right: 8px;
-        }
-    `;
-    document.head.appendChild(style);
-}
-injectStyles();
-
-
 function showStatus(imageElement, message, type) {
-    // Remove existing status for this image
-    const existingStatus = document.querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
+    // Remove existing status for this image from Shadow Root
+    const existingStatus = getShadowRoot().querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
     if (existingStatus) existingStatus.remove();
 
     const statusDiv = document.createElement('div');
@@ -895,9 +964,9 @@ function showStatus(imageElement, message, type) {
         background: 'rgba(0, 0, 0, 0.7)',
         color: 'white',
         padding: '6px 12px',
-        borderRadius: '20px', // 丸みを帯びさせる 
+        borderRadius: '20px',
         fontSize: '13px',
-        zIndex: '2147483647', // Max z-index
+        zIndex: '2147483647',
         whiteSpace: 'nowrap',
         maxWidth: '350px',
         overflow: 'hidden',
@@ -911,19 +980,18 @@ function showStatus(imageElement, message, type) {
     else if (type === 'rate-limit') { statusDiv.style.backgroundColor = 'rgba(255, 193, 7, 0.95)'; statusDiv.style.color = '#212529'; }
     else if (type === 'error') statusDiv.style.backgroundColor = 'rgba(220, 53, 69, 0.9)';
 
-    document.body.appendChild(statusDiv);
+    getShadowRoot().appendChild(statusDiv);
 
     const imgRect = imageElement.getBoundingClientRect();
     // Position absolutely relative to document
     statusDiv.style.top = `${imgRect.top + window.scrollY - 40}px`;
     statusDiv.style.left = `${imgRect.left + window.scrollX}px`;
 
-
     if (type === 'error' || type === 'rate-limit') setTimeout(() => { if (statusDiv.parentNode) statusDiv.remove(); }, 8000);
 }
 
 function showRateLimitDialog(modelLabel) {
-    const existingDialog = document.getElementById('gemini-error-dialog');
+    const existingDialog = getGeminiElement('gemini-error-dialog');
     if (existingDialog) existingDialog.remove();
     
     const dialog = document.createElement('div');
@@ -966,7 +1034,7 @@ function showRateLimitDialog(modelLabel) {
     btnContainer.appendChild(closeBtn);
     dialog.appendChild(btnContainer);
 
-    document.body.appendChild(dialog);
+    getShadowRoot().appendChild(dialog);
 
     cleanupA11y = attachDialogAccessibility(dialog, {
         titleElement: title,
@@ -977,7 +1045,7 @@ function showRateLimitDialog(modelLabel) {
 }
 
 function showApiKeyErrorDialog(modelLabel) {
-    const existingDialog = document.getElementById('gemini-error-dialog');
+    const existingDialog = getGeminiElement('gemini-error-dialog');
     if (existingDialog) existingDialog.remove();
     
     const dialog = document.createElement('div');
@@ -1020,7 +1088,7 @@ function showApiKeyErrorDialog(modelLabel) {
     btnContainer.appendChild(closeBtn);
     dialog.appendChild(btnContainer);
 
-    document.body.appendChild(dialog);
+    getShadowRoot().appendChild(dialog);
 
     cleanupA11y = attachDialogAccessibility(dialog, {
         titleElement: title,
@@ -1029,4 +1097,5 @@ function showApiKeyErrorDialog(modelLabel) {
         restoreFocusElement: lastRightClickedElement
     });
 }
+
 
