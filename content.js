@@ -530,7 +530,7 @@ function showInstructionDialog(onSubmit) {
     });
     const sparkleSpan = document.createElement('span');
     sparkleSpan.textContent = '✨';
-    const submitText = document.createTextNode(' 生成開始 (Auto)');
+    const submitText = document.createTextNode(' 生成開始');
     submitButton.appendChild(sparkleSpan);
     submitButton.appendChild(submitText);
 
@@ -582,8 +582,6 @@ function showInstructionDialog(onSubmit) {
     submitButton.onclick = () => {
         onSubmit({
             prompt: textArea.value,
-            model: 'auto',
-            modelLabel: 'Auto',
             aiProvider: 'Gemini'
         });
         closeDialog();

@@ -1,9 +1,11 @@
 // background.js
 
-importScripts('models.js');
-
 // --- 定数定義 (Constants) ---
-const MODEL_PRIORITY_STORAGE_KEY = 'geminiModelPriorityOrder';
+/** 使用するGeminiモデルID（高速かつ高性能な最新Flashモデル） */
+const GEMINI_MODEL_ID = 'gemini-3.8-flash';
+
+/** UI表示用のモデルラベル */
+const GEMINI_MODEL_LABEL = '3.8 Flash';
 
 /** Gemini API送信用の画像長辺の最大ピクセル数（認識精度と通信速度・トークン効率のトレードオフ最適値） */
 const MAX_IMAGE_DIMENSION = 1536;
@@ -16,38 +18,6 @@ const JPEG_COMPRESSION_QUALITY = 0.85;
 
 /** ArrayBufferからBase64への変換時にスタックオーバーフローを防ぐための分割チャンクサイズ（8KB） */
 const BASE64_CHUNK_SIZE = 8192;
-
-function areArraysEqual(a, b) {
-    if (!Array.isArray(a) || !Array.isArray(b)) return false;
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) {
-        if (a[i] !== b[i]) return false;
-    }
-    return true;
-}
-
-async function migrateModelPriorityOrder() {
-    try {
-        const data = await chrome.storage.sync.get(MODEL_PRIORITY_STORAGE_KEY);
-        const storedOrder = data[MODEL_PRIORITY_STORAGE_KEY];
-        const normalized = normalizeGeminiModelOrder(storedOrder);
-        if (!areArraysEqual(storedOrder, normalized)) {
-            await chrome.storage.sync.set({ [MODEL_PRIORITY_STORAGE_KEY]: normalized });
-        }
-    } catch (error) {
-        console.warn('モデル優先順位の移行に失敗しました:', error);
-    }
-}
-
-async function getModelPriorityList() {
-    try {
-        const data = await chrome.storage.sync.get(MODEL_PRIORITY_STORAGE_KEY);
-        return getGeminiModelsByOrder(data[MODEL_PRIORITY_STORAGE_KEY]);
-    } catch (error) {
-        console.warn('モデル優先順位の取得に失敗しました:', error);
-        return GEMINI_MODEL_DEFINITIONS;
-    }
-}
 
 /**
  * 対象のタブおよびフレームへコンテンツスクリプトをオンデマンドで動的注入（Dynamic Script Injection）する
@@ -102,43 +72,33 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
             }, { frameId: frameId });
             if (userChoice) {
                 finalPrompt = userChoice.prompt;
-                // モデル選択は 'auto' が返ってくるが、再生成時などに備えて保持する構造は維持
             }
         } else {
             // 再生成時 (文脈あり)
             finalPrompt = createRegenerationPrompt(context); // 文脈からプロンプトを生成
             userChoice = { 
-                prompt: finalPrompt, // 生成したプロンプトをセット
-                isRegeneration: true,
-                model: 'auto' // 再生成時もオートで良い
+                prompt: finalPrompt,
+                isRegeneration: true
             };
         }
 
         if (userChoice && finalPrompt) {
-            // フォールバックロジックを使って生成開始
-            // UIには「生成開始」をまず伝える（詳細なモデル名はフォールバック関数内で都度通知）
+            // UIに生成開始を通知
             chrome.tabs.sendMessage(tabId, { 
                 action: "startAltTextGeneration", imageUrl, targetElementId, frameId 
             }, { frameId });
 
-            const result = await generateAltTextWithFallback(imageUrl, finalPrompt, tabId, frameId);
+            const result = await generateAltText(imageUrl, finalPrompt, tabId, frameId);
             
             if (result.success) {
-                // 成功したモデル情報を保存（次回の参考に使えるかもしれないが、現状は常に上位から試す）
-                await chrome.storage.local.set({ 
-                    lastModel: result.modelId, 
-                    lastModelLabel: result.modelLabel, 
-                    lastAiProvider: 'Gemini' 
-                });
-
                 chrome.tabs.sendMessage(tabId, { 
                     action: "updateAltText", 
                     imageUrl, 
                     altText: result.altText, 
                     targetElementId, 
                     frameId, 
-                    model: result.modelId, 
-                    modelLabel: result.modelLabel, 
+                    model: GEMINI_MODEL_ID, 
+                    modelLabel: GEMINI_MODEL_LABEL, 
                     aiProvider: 'Gemini' 
                 }, { frameId }, (response) => {
                     if (chrome.runtime.lastError) {
@@ -146,7 +106,7 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
                     }
                 });
             } else {
-                throw new Error(result.errorMessage || "全てのモデルで生成に失敗しました。");
+                throw new Error(result.errorMessage || "生成に失敗しました。");
             }
         }
     } catch (error) {
@@ -162,72 +122,42 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
 }
 
 /**
- * フォールバック機能付きでAltテキストを生成する
+ * 単一モデル（Gemini 3.8 Flash）を用いてAltテキストを生成する
+ * 
+ * 複数モデルの切り替えや不要なフォールバックループを排除し、単一の明確なAPI呼び出しに集約。
+ *
+ * @param {string} imageUrl - 対象画像URL
+ * @param {string} promptText - 指示プロンプト
+ * @param {number} tabId - タブID
+ * @param {number} frameId - フレームID
+ * @returns {Promise<{ success: boolean, altText?: string, errorMessage?: string }>}
  */
-async function generateAltTextWithFallback(imageUrl, promptText, tabId, frameId) {
-    let lastError = null;
+async function generateAltText(imageUrl, promptText, tabId, frameId) {
+    try {
+        // 画像を一度だけ取得・最適化（リサイズ & JPEG圧縮）
+        const preparedImage = await prepareOptimizedImage(imageUrl);
 
-    // フォールバックループ前に画像を一度だけ取得・最適化（重複フェッチ・多重エンコードを防止）
-    const preparedImage = await prepareOptimizedImage(imageUrl);
+        // UIに「3.8 Flash で生成中...」と通知
+        chrome.tabs.sendMessage(tabId, { 
+            action: "updateModelStatus", 
+            imageUrl, 
+            statusText: `Gemini ${GEMINI_MODEL_LABEL} で生成中...` 
+        }, { frameId }).catch(() => {});
 
-    const modelPriorityList = await getModelPriorityList();
-
-    for (const modelInfo of modelPriorityList) {
-        try {
-            // UIに「〇〇モデルで生成中...」と通知
-            chrome.tabs.sendMessage(tabId, { 
-                action: "updateModelStatus", 
-                imageUrl, 
-                statusText: `Gemini ${modelInfo.label} で生成中...` 
-            }, { frameId }).catch(() => {}); // タブが閉じている場合などのエラーは無視
-
-            // 生成試行
-            console.log(`Attempting generation with ${modelInfo.id}...`);
-            const altText = await generateAltTextWithGemini(preparedImage, modelInfo.id, promptText);
-            
-            // 成功したらリターン
-            return {
-                success: true,
-                altText: altText,
-                modelId: modelInfo.id,
-                modelLabel: modelInfo.label
-            };
-
-        } catch (error) {
-            lastError = error;
-
-            // エラーの種類を確認
-            const isRateLimit = error.message.includes('429') || error.message.includes('rate limit') || error.message.includes('quota') || error.message.includes('Resource has been exhausted');
-            const isModelNotFound = error.message.includes('404') || error.message.includes('not found') || error.message.includes('Publisher Model');
-            const isServerOverload = error.message.includes('503') || error.message.includes('500') || error.message.includes('Overloaded') || error.message.includes('overloaded');
-
-            // レートリミットやサーバー過負荷は想定内のエラーなので簡潔なログのみ
-            if (isRateLimit) {
-                console.log(`${modelInfo.id}: レートリミット到達、次のモデルへ`);
-            } else if (isServerOverload) {
-                console.log(`${modelInfo.id}: サーバー過負荷、次のモデルへ`);
-            } else if (isModelNotFound) {
-                console.warn(`${modelInfo.id}: モデルが見つかりません`);
-            } else {
-                // その他の予期しないエラーは詳細ログを出力
-                console.warn(`${modelInfo.id} でエラー:`, error);
-            }
-            
-            // APIキー未設定など、即座に中断すべき致命的エラー
-            if (error.message.includes("APIキーが設定されていません")) {
-                throw error;
-            }
-
-            // 次のモデルへ進む
-            continue; 
-        }
+        console.log(`Generating alt text with ${GEMINI_MODEL_ID}...`);
+        const altText = await generateAltTextWithGemini(preparedImage, GEMINI_MODEL_ID, promptText);
+        
+        return {
+            success: true,
+            altText: altText
+        };
+    } catch (error) {
+        console.warn(`Altテキスト生成エラー (${GEMINI_MODEL_ID}):`, error);
+        return {
+            success: false,
+            errorMessage: error.message || "生成に失敗しました。"
+        };
     }
-
-    // 全てのモデルで失敗した場合
-    return {
-        success: false,
-        errorMessage: lastError ? lastError.message : "不明なエラーにより生成できませんでした。"
-    };
 }
 
 /**
@@ -272,7 +202,10 @@ async function updateContextMenuState() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-    migrateModelPriorityOrder();
+    // 以前のバージョンで保存されていた不要なモデル優先順位データをクリーンアップ
+    chrome.storage.sync.remove('geminiModelPriorityOrder').catch(() => {});
+    chrome.storage.local.remove(['lastModel', 'lastModelLabel']).catch(() => {});
+
     chrome.contextMenus.removeAll(() => {
       chrome.contextMenus.create({
         id: "instructWithGemini",

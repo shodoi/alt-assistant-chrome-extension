@@ -107,124 +107,38 @@
             color: #202124;
             font-weight: 600;
         }
-        .model-list {
-            list-style: none;
-            padding: 0;
-            margin: 0 0 16px 0;
-        }
-        .model-item {
+        .model-info-card {
             display: flex;
-            align-items: flex-start;
-            gap: 12px;
+            align-items: center;
+            justify-content: space-between;
             padding: 16px;
             border: 1px solid #dadce0;
             border-radius: 8px;
-            background: #ffffff;
-            margin-bottom: 8px;
-            cursor: grab;
-            transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
-            user-select: none;
-            position: relative;
+            background-color: #f8f9fa;
         }
-        .model-item:hover {
-            border-color: #bdc1c6;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        }
-        .model-item.dragging {
-            opacity: 0.5;
-            background: #f1f3f4;
-            border: 2px dashed #1a73e8;
-            cursor: grabbing;
-        }
-        .drag-handle {
-            color: #9aa0a6;
-            cursor: grab;
-            padding-top: 2px;
-            flex-shrink: 0;
-        }
-        .model-content {
-            flex-grow: 1;
-            min-width: 0;
-        }
-        .model-header {
+        .model-info-detail {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 4px;
+            flex-direction: column;
+            gap: 4px;
         }
-        .model-label {
+        .model-info-title {
             font-weight: 600;
             color: #202124;
             font-size: 14px;
         }
-        .model-badges {
-            display: flex;
-            gap: 6px;
-        }
-        .badge {
-            font-size: 11px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-weight: 500;
-        }
-        .badge-speed {
-            background-color: #e8f0fe;
-            color: #1967d2;
-        }
-        .badge-quality {
-            background-color: #f3e8fd;
-            color: #9334e6;
-        }
-        .model-desc {
+        .model-info-desc {
             font-size: 13px;
             color: #5f6368;
             margin: 0;
-            line-height: 1.4;
         }
-        
-        button.secondary {
-            background-color: #ffffff;
-            color: #5f6368;
-            border: 1px solid #dadce0;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 500;
-            width: auto;
-            margin-top: 8px;
-            display: inline-block;
-        }
-        button.secondary:hover {
-            background-color: #f8f9fa;
-            color: #202124;
-            border-color: #bdc1c6;
-        }
-        .button-group {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 16px;
-        }
-        button.primary {
-            background-color: #1a73e8;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 13px;
+        .model-badge {
+            background-color: #e8f0fe;
+            color: #1967d2;
+            font-size: 12px;
             font-weight: 600;
-            width: auto;
-            margin-top: 8px; /* secondaryと同じマージン */
-        }
-        button.primary:hover {
-            background-color: #1557b0;
-        }
-        button.primary:disabled {
-            background-color: #9aa0a6;
-            cursor: default;
-            opacity: 0.7;
+            padding: 4px 10px;
+            border-radius: 12px;
+            white-space: nowrap;
         }
     </style>
 </head>
@@ -240,16 +154,15 @@
         <div id="statusMessage"></div>
 
         <hr class="divider">
-        <h2>モデルの優先順位</h2>
-
-        <p>ドラッグ&ドロップでモデルの優先順位を並べ替えることができます。上にあるモデルほど優先的に使用されます。</p>
-        <ul id="modelPriorityList" class="model-list" aria-label="モデルの優先順位"></ul>
-        <div class="button-group">
-            <button id="resetModelPriorityButton" type="button" class="secondary">デフォルトに戻す</button>
-            <button id="saveModelPriorityButton" type="button" class="primary" disabled>順序を保存</button>
+        <h2>使用モデル</h2>
+        <div class="model-info-card">
+            <div class="model-info-detail">
+                <span class="model-info-title">Gemini 3.8 Flash</span>
+                <p class="model-info-desc">高速かつ高精度な最新世代モデルで Alt テキストを自動生成します。</p>
+            </div>
+            <span class="model-badge">標準モデル</span>
         </div>
     </div>
-    <script src="models.js" defer></script>
     <script src="options.js" defer></script>
 </body>
 </html>
