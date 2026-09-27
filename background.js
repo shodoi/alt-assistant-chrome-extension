@@ -2,7 +2,20 @@
 
 importScripts('models.js');
 
+// --- 定数定義 (Constants) ---
 const MODEL_PRIORITY_STORAGE_KEY = 'geminiModelPriorityOrder';
+
+/** Gemini API送信用の画像長辺の最大ピクセル数（認識精度と通信速度・トークン効率のトレードオフ最適値） */
+const MAX_IMAGE_DIMENSION = 1536;
+
+/** 再圧縮をスキップする非圧縮ファイルサイズ上限（1MB）。小サイズ画像での無駄な再エンコードを防止 */
+const MAX_UNCOMPRESSED_IMAGE_SIZE = 1024 * 1024;
+
+/** リサイズ画像の JPEG 圧縮品質（85%） */
+const JPEG_COMPRESSION_QUALITY = 0.85;
+
+/** ArrayBufferからBase64への変換時にスタックオーバーフローを防ぐための分割チャンクサイズ（8KB） */
+const BASE64_CHUNK_SIZE = 8192;
 
 function areArraysEqual(a, b) {
     if (!Array.isArray(a) || !Array.isArray(b)) return false;
@@ -327,9 +340,8 @@ function bufferToBase64(buffer) {
     const bytes = new Uint8Array(buffer);
     let binary = '';
     const len = bytes.byteLength;
-    const CHUNK_SIZE = 8192;
-    for (let i = 0; i < len; i += CHUNK_SIZE) {
-        const chunk = bytes.subarray(i, i + CHUNK_SIZE);
+    for (let i = 0; i < len; i += BASE64_CHUNK_SIZE) {
+        const chunk = bytes.subarray(i, i + BASE64_CHUNK_SIZE);
         binary += String.fromCharCode.apply(null, chunk);
     }
     return btoa(binary);
@@ -344,10 +356,10 @@ function bufferToBase64(buffer) {
  * 肥大化しレイテンシが増大するため、長辺を最大1536pxに制限する。
  *
  * @param {Blob} originalBlob - 元画像のBlobオブジェクト
- * @param {number} [maxDimension=1536] - 許容する長辺の最大ピクセルサイズ
+ * @param {number} [maxDimension=MAX_IMAGE_DIMENSION] - 許容する長辺の最大ピクセルサイズ
  * @returns {Promise<{ blob: Blob, mimeType: string }>} 最適化されたBlobとMIMEタイプ
  */
-async function optimizeImageBlob(originalBlob, maxDimension = 1536) {
+async function optimizeImageBlob(originalBlob, maxDimension = MAX_IMAGE_DIMENSION) {
     // ベクター画像（SVG）や空データはラスタライズ・圧縮処理をバイパスする
     if (originalBlob.type === 'image/svg+xml' || originalBlob.size === 0) {
         return { blob: originalBlob, mimeType: originalBlob.type || 'image/jpeg' };
@@ -358,8 +370,7 @@ async function optimizeImageBlob(originalBlob, maxDimension = 1536) {
         const { width, height } = imageBitmap;
 
         // 長辺が上限以下かつファイルサイズが1MB未満なら、再エンコードによる画質劣化を避けるためそのまま利用
-        const MAX_UNCOMPRESSED_SIZE = 1024 * 1024;
-        if (width <= maxDimension && height <= maxDimension && originalBlob.size <= MAX_UNCOMPRESSED_SIZE) {
+        if (width <= maxDimension && height <= maxDimension && originalBlob.size <= MAX_UNCOMPRESSED_IMAGE_SIZE) {
             imageBitmap.close();
             return { blob: originalBlob, mimeType: originalBlob.type || 'image/jpeg' };
         }
@@ -386,7 +397,7 @@ async function optimizeImageBlob(originalBlob, maxDimension = 1536) {
         // Geminiの入力として十分な画質を保ちつつファイルサイズを極小化するため JPEG (quality 0.85) で出力
         const resizedBlob = await canvas.convertToBlob({
             type: 'image/jpeg',
-            quality: 0.85
+            quality: JPEG_COMPRESSION_QUALITY
         });
 
         return { blob: resizedBlob, mimeType: 'image/jpeg' };

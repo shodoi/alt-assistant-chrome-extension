@@ -13,6 +13,19 @@
     }
     window.__GEMINI_ALT_ASSISTANT_INITIALIZED__ = true;
 
+    // --- 定数定義 (Constants) ---
+    /** 最前面表示を保証するための最大 z-index 値 (32-bit 符号付き整数の最大値) */
+    const Z_INDEX_MAX = '2147483647';
+
+    /** Shadow DOM 内部でダイアログ要素が配置される基準 z-index */
+    const Z_INDEX_DIALOG = '10001';
+
+    /** エラー・警告などのステータスバッジを自動消去するまでの待機時間（ミリ秒） */
+    const STATUS_TOAST_DURATION_MS = 8000;
+
+    /** クリップボードコピー結果（チェックマーク/バツ印）を表示し続ける時間（ミリ秒） */
+    const COPY_FEEDBACK_DURATION_MS = 1500;
+
 // --- スタイル定義 (Shadow DOM 内部用) ---
 const GEMINI_SHADOW_STYLES = `
     /* ライトモード（デフォルト） */
@@ -230,7 +243,7 @@ function getShadowRoot() {
             Object.assign(shadowHostInstance.style, {
                 all: 'initial',
                 position: 'static',
-                zIndex: '2147483647',
+                zIndex: Z_INDEX_MAX,
             });
             (document.body || document.documentElement).appendChild(shadowHostInstance);
         }
@@ -464,7 +477,7 @@ function showInstructionDialog(onSubmit) {
 
     Object.assign(dialog.style, {
         position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-        zIndex: '10001', border: '1px solid #ccc', borderRadius: '12px',
+        zIndex: Z_INDEX_DIALOG, border: '1px solid #ccc', borderRadius: '12px',
         boxShadow: '0 8px 24px rgba(0,0,0,0.3)', padding: '24px', width: '560px', maxWidth: '90vw',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     });
@@ -586,7 +599,7 @@ function showAltTextDialog(initialAltText, imageElement, modelLabel, targetEleme
     dialog.className = 'gemini-dialog';
     dialog.dataset.imageSrc = imageElement.src; // 現在の画像URLを保存
     Object.assign(dialog.style, {
-        position: 'fixed', top: '20px', left: '20px', zIndex: '10000',
+        position: 'fixed', top: '20px', left: '20px', zIndex: Z_INDEX_DIALOG,
         border: '1px solid #ddd', borderRadius: '12px',
         boxShadow: '0 8px 25px rgba(0,0,0,0.2)', width: '550px', display: 'flex',
         flexDirection: 'column', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
@@ -821,7 +834,7 @@ function addMessageToChat(text, sender) {
                     copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#28a745"/></svg>`; // Checkmark
                     setTimeout(() => {
                         copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
-                    }, 1500);
+                    }, COPY_FEEDBACK_DURATION_MS);
                 }).catch(() => {
                     // Clipboard APIが失敗した場合のフォールバック
                     fallbackCopyTextToClipboard(textToCopy, copyButton);
@@ -896,20 +909,20 @@ function fallbackCopyTextToClipboard(text, buttonElement) {
             buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="#28a745"/></svg>`;
             setTimeout(() => {
                 buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
-            }, 1500);
+            }, COPY_FEEDBACK_DURATION_MS);
         } else {
             console.error('フォールバックコピーに失敗しました');
             buttonElement.textContent = '✗';
             setTimeout(() => {
                 buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
-            }, 1500);
+            }, COPY_FEEDBACK_DURATION_MS);
         }
     } catch (err) {
         console.error('コピー処理でエラーが発生しました:', err);
         buttonElement.textContent = '✗';
         setTimeout(() => {
             buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
-        }, 1500);
+        }, COPY_FEEDBACK_DURATION_MS);
     } finally {
         document.body.removeChild(textArea);
     }
@@ -979,7 +992,7 @@ function showStatus(imageElement, message, type) {
         padding: '6px 12px',
         borderRadius: '20px',
         fontSize: '13px',
-        zIndex: '2147483647',
+        zIndex: Z_INDEX_MAX,
         whiteSpace: 'nowrap',
         maxWidth: '350px',
         overflow: 'hidden',
@@ -1000,7 +1013,7 @@ function showStatus(imageElement, message, type) {
     statusDiv.style.top = `${imgRect.top + window.scrollY - 40}px`;
     statusDiv.style.left = `${imgRect.left + window.scrollX}px`;
 
-    if (type === 'error' || type === 'rate-limit') setTimeout(() => { if (statusDiv.parentNode) statusDiv.remove(); }, 8000);
+    if (type === 'error' || type === 'rate-limit') setTimeout(() => { if (statusDiv.parentNode) statusDiv.remove(); }, STATUS_TOAST_DURATION_MS);
 }
 
 function showRateLimitDialog(modelLabel) {
@@ -1011,7 +1024,7 @@ function showRateLimitDialog(modelLabel) {
     dialog.id = 'gemini-error-dialog';
     Object.assign(dialog.style, { 
         position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', 
-        zIndex: '10001', backgroundColor: '#fff3cd', border: '2px solid #ffc107', 
+        zIndex: Z_INDEX_DIALOG, backgroundColor: '#fff3cd', border: '2px solid #ffc107', 
         borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.3)', padding: '24px', 
         width: '400px', maxWidth: '90vw', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', 
         fontSize: '14px', color: '#333' 
@@ -1065,7 +1078,7 @@ function showApiKeyErrorDialog(modelLabel) {
     dialog.id = 'gemini-error-dialog';
     Object.assign(dialog.style, { 
         position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', 
-        zIndex: '10001', backgroundColor: '#f8d7da', border: '2px solid #dc3545', 
+        zIndex: Z_INDEX_DIALOG, backgroundColor: '#f8d7da', border: '2px solid #dc3545', 
         borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.3)', padding: '24px', 
         width: '380px', maxWidth: '90vw', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', 
         fontSize: '14px', color: '#333' 
