@@ -6,7 +6,8 @@
     "permissions": [
       "contextMenus",
       "activeTab",
-      "storage"
+      "storage",
+      "scripting"
     ],
     "host_permissions": [
       "<all_urls>"
@@ -14,13 +15,6 @@
     "background": {
       "service_worker": "background.js"
     },
-    "content_scripts": [
-      {
-        "matches": ["<all_urls>"],
-        "js": ["content.js"],
-        "all_frames": true
-      }
-    ],
     "options_page": "options.html",
     "icons": {
       "16": "icons/icon16.png",

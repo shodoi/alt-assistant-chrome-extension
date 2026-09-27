@@ -1,5 +1,18 @@
 // content.js
 
+/**
+ * Gemini Alt Text Generator - コンテンツスクリプト
+ * 
+ * コンテキストメニュー実行時にオンデマンドで動的注入（Dynamic Script Injection）される構成に対応。
+ * 同一ページ・フレーム内での再注入時に、変数再宣言エラー（Identifier already declared）や
+ * イベントリスナーの多重登録を防ぐため、即時実行関数式（IIFE）と初期化済みフラグで保護する。
+ */
+(() => {
+    if (window.__GEMINI_ALT_ASSISTANT_INITIALIZED__) {
+        return;
+    }
+    window.__GEMINI_ALT_ASSISTANT_INITIALIZED__ = true;
+
 // --- スタイル定義 (Shadow DOM 内部用) ---
 const GEMINI_SHADOW_STYLES = `
     /* ライトモード（デフォルト） */
@@ -1098,4 +1111,4 @@ function showApiKeyErrorDialog(modelLabel) {
     });
 }
 
-
+})();

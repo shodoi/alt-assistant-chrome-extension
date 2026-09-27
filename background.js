@@ -37,6 +37,34 @@ async function getModelPriorityList() {
 }
 
 /**
+ * 対象のタブおよびフレームへコンテンツスクリプトをオンデマンドで動的注入（Dynamic Script Injection）する
+ * 
+ * manifest.json での常時全ページ注入を廃止し、ユーザーが拡張機能のアクションを起こした
+ * タイミングでのみスクリプトをロードすることで、ブラウザの消費メモリとバックグラウンド負荷を大幅に削減する。
+ *
+ * @param {number} tabId - 注入対象のタブID
+ * @param {number} [frameId=0] - 注入対象のフレームID
+ * @returns {Promise<void>}
+ */
+async function ensureContentScriptInjected(tabId, frameId = 0) {
+    const target = { tabId };
+    if (typeof frameId === 'number' && frameId > 0) {
+        target.frameIds = [frameId];
+    }
+
+    try {
+        await chrome.scripting.executeScript({
+            target,
+            files: ['content.js']
+        });
+    } catch (error) {
+        // chrome:// や chrome-extension:// などの保護されたシステムページでは注入が拒否される
+        console.warn(`コンテンツスクリプトの動的注入（Dynamic Script Injection）に失敗しました (tabId: ${tabId}, frameId: ${frameId}):`, error);
+        throw new Error("このページでは拡張機能を実行できません（保護されたシステムページ等）。");
+    }
+}
+
+/**
  * Altテキスト生成の全プロセスを開始するメイン関数。
  * @param {string} imageUrl - 対象の画像URL
  * @param {number} tabId - タブのID
@@ -46,6 +74,9 @@ async function getModelPriorityList() {
  */
 async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId, context = {}) {
     try {
+        // コンテンツスクリプトをオンデマンドで動的注入
+        await ensureContentScriptInjected(tabId, frameId);
+
         let userChoice;
         let finalPrompt;
 
