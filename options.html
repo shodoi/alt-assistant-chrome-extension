@@ -2,167 +2,337 @@
 <html lang="ja">
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
     <title>Gemini Alt Text Generator 設定</title>
     <style>
+        /* ==========================================================================
+           good-css foundations: The reset
+           ========================================================================== */
         *, *::before, *::after {
             box-sizing: border-box;
+            min-width: 0;
         }
+
+        :root {
+            color-scheme: light dark;
+            interpolate-size: allow-keywords;
+            scrollbar-gutter: stable;
+            text-wrap: pretty;
+            overflow-wrap: break-word;
+            font-synthesis: none;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            -webkit-text-size-adjust: 100%;
+            -webkit-tap-highlight-color: transparent;
+
+            /* ======================================================================
+               good-css foundations: One set of color tokens for light and dark (OKLCH)
+               ====================================================================== */
+            --bg: light-dark(oklch(0.97 0.005 250), oklch(0.14 0.005 250));
+            --surface: light-dark(oklch(1 0 none), oklch(0.20 0.005 250));
+            --surface-raised: light-dark(oklch(0.96 0.005 250), oklch(0.25 0.005 250));
+            --fg: light-dark(oklch(0.20 0 none), oklch(0.95 0 none));
+            --fg-muted: light-dark(oklch(0.48 0.015 250), oklch(0.72 0.015 250));
+            --border: light-dark(oklch(0.88 0.01 250), oklch(0.32 0.01 250));
+            --border-subtle: light-dark(oklch(0.93 0.005 250), oklch(0.26 0.005 250));
+
+            /* アクセントカラーと状態色 */
+            --primary: oklch(0.56 0.20 255);
+            --primary-hover: color-mix(in oklch, var(--primary), black 15%);
+            --primary-subtle: color-mix(in oklch, var(--primary) 12%, transparent);
+            --primary-fg: oklch(0.99 0 none);
+
+            --success: oklch(0.60 0.18 145);
+            --success-bg: color-mix(in oklch, var(--success) 14%, transparent);
+            --success-fg: light-dark(oklch(0.38 0.14 145), oklch(0.85 0.14 145));
+
+            --danger: oklch(0.58 0.22 25);
+            --danger-bg: color-mix(in oklch, var(--danger) 14%, transparent);
+            --danger-fg: light-dark(oklch(0.42 0.18 25), oklch(0.88 0.16 25));
+
+            /* good-css foundations: Fluid sizes with clamp() */
+            --font-title: clamp(1.25rem, 1rem + 0.8vw, 1.625rem);
+            --space-outer: clamp(1.5rem, 1rem + 2vw, 3rem);
+            --radius-container: 1.25rem;
+            --radius-element: calc(var(--radius-container) - 0.75rem); /* 0.5rem (8px) コンセントリック角丸 */
+        }
+
         body {
+            margin: 0;
+            min-height: 100svh;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            padding: 40px 20px;
-            min-width: 320px;
-            background-color: #f8f9fa;
-            color: #333;
+            background-color: var(--bg);
+            color: var(--fg);
             line-height: 1.6;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding-inline: 1rem;
+            padding-block: var(--space-outer);
         }
+
+        h1, h2, h3 {
+            text-wrap: balance;
+            margin-block-start: 0;
+        }
+
         h1 {
-            color: #202124;
-            margin-bottom: 24px;
+            font-size: var(--font-title);
+            color: var(--fg);
+            margin-block-end: 1rem;
             text-align: center;
-            font-size: 22px;
+            font-weight: 700;
         }
+
+        h2 {
+            font-size: 1rem;
+            margin-block-end: 0.75rem;
+            font-weight: 600;
+        }
+
+        p {
+            font-size: 0.875rem;
+            color: var(--fg-muted);
+            margin-block-start: 0;
+            margin-block-end: 1rem;
+        }
+
+        a {
+            color: var(--primary);
+            text-decoration: none;
+            touch-action: manipulation;
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+            a:hover {
+                text-decoration: underline;
+            }
+        }
+
+        /* ==========================================================================
+           レイアウトとコンポーネント (Logical properties & Concentric radius)
+           ========================================================================== */
         .container {
-            background-color: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-            padding: 32px;
-            max-width: 560px;
-            margin: 0 auto;
+            background-color: var(--surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-container);
+            box-shadow: 0 4px 20px color-mix(in oklch, var(--fg) 6%, transparent);
+            padding-inline: clamp(1.25rem, 1rem + 1vw, 2.25rem);
+            padding-block: clamp(1.5rem, 1.25rem + 1vw, 2.25rem);
+            inline-size: 100%;
+            max-inline-size: 35rem; /* 560px */
+            overflow: clip; /* good-css: overflow: clip over hidden */
         }
+
+        .header-section {
+            margin-block-end: 1.5rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            margin-block-end: 1.25rem;
+        }
+
         label {
-            display: block;
-            margin-bottom: 8px;
             font-weight: 600;
-            color: #202124;
-            font-size: 14px;
+            color: var(--fg);
+            font-size: 0.875rem;
         }
+
+        /* ==========================================================================
+           フォーム要素 (Interaction & Accessibility)
+           ========================================================================== */
         input[type="password"] {
-            width: 100%;
-            padding: 12px;
-            margin-bottom: 16px;
-            border: 1px solid #dadce0;
-            border-radius: 8px;
-            font-size: 14px;
-            transition: border-color 0.2s;
+            inline-size: 100%;
+            padding-block: 0.75rem;
+            padding-inline: 0.875rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-element);
+            background-color: var(--surface);
+            color: var(--fg);
+            font-size: max(16px, 0.875rem);
+            transition: border-color 160ms ease-out;
         }
-        input[type="password"]:focus {
-            border-color: #1a73e8;
-            outline: none;
+
+        input[type="password"]:focus-visible {
+            outline: max(2px, 0.08em) solid var(--primary);
+            outline-offset: 2px;
+            border-color: var(--primary);
         }
+
+        input[type="password"]:user-invalid {
+            border-color: var(--danger);
+        }
+
+        /* ボタン要素 (good-css: Press feedback & Hit area) */
+        button, [role="button"] {
+            touch-action: manipulation;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
         button#saveButton {
-            background-color: #1a73e8;
-            color: white;
-            padding: 12px 24px;
+            inline-size: 100%;
+            padding-block: 0.75rem;
+            padding-inline: 1.5rem;
+            background-color: var(--primary);
+            color: var(--primary-fg);
             border: none;
-            border-radius: 8px;
+            border-radius: var(--radius-element);
             cursor: pointer;
-            font-size: 14px;
+            font-size: 0.9375rem;
             font-weight: 600;
-            transition: background-color 0.2s;
-            width: 100%;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
         }
-        button#saveButton:hover {
-            background-color: #1557b0;
+
+        @media (hover: hover) and (pointer: fine) {
+            button#saveButton:hover:not(:disabled) {
+                background-color: var(--primary-hover);
+            }
         }
+
+        button#saveButton:active:not(:disabled) {
+            transform: scale(0.97);
+        }
+
+        @media (prefers-reduced-motion: no-preference) {
+            button#saveButton {
+                transition: background-color 160ms ease-out, transform 160ms ease-out;
+            }
+        }
+
+        button#saveButton:focus-visible {
+            outline: max(2px, 0.08em) solid var(--primary);
+            outline-offset: 3px;
+        }
+
         button#saveButton:disabled {
-            background-color: #9aa0a6;
-            cursor: default;
+            background-color: color-mix(in oklch, var(--fg) 25%, transparent);
+            color: color-mix(in oklch, var(--fg) 50%, transparent);
+            cursor: not-allowed;
+            transform: none;
         }
+
+        /* ==========================================================================
+           ステータスメッセージ (アニメーション & トークン活用)
+           ========================================================================== */
         #statusMessage {
-            margin-top: 16px;
-            padding: 12px;
-            border-radius: 8px;
-            font-size: 14px;
+            margin-block-start: 1rem;
+            padding-block: 0.75rem;
+            padding-inline: 1rem;
+            border-radius: var(--radius-element);
+            font-size: 0.875rem;
             text-align: center;
             display: none;
         }
+
         #statusMessage.success {
-            background-color: #e6f4ea;
-            color: #137333;
+            background-color: var(--success-bg);
+            color: var(--success-fg);
+            border: 1px solid color-mix(in oklch, var(--success) 30%, transparent);
         }
+
         #statusMessage.error {
-            background-color: #fce8e6;
-            color: #c5221f;
+            background-color: var(--danger-bg);
+            color: var(--danger-fg);
+            border: 1px solid color-mix(in oklch, var(--danger) 30%, transparent);
         }
-        p {
-            font-size: 14px;
-            color: #5f6368;
-            margin-bottom: 16px;
-        }
-        a {
-            color: #1a73e8;
-            text-decoration: none;
-        }
-        a:hover {
+
+        #statusMessage a {
+            color: inherit;
+            font-weight: 600;
             text-decoration: underline;
+            margin-inline-start: 0.5rem;
         }
+
         hr.divider {
             border: none;
-            border-top: 1px solid #f1f3f4;
-            margin: 32px 0;
+            border-block-start: 1px solid var(--border-subtle);
+            margin-block: 2rem;
         }
-        h2 {
-            font-size: 16px;
-            margin: 0 0 12px 0;
-            color: #202124;
-            font-weight: 600;
-        }
+
+        /* ==========================================================================
+           情報カード (Subgrid / Intrinsic Layout)
+           ========================================================================== */
         .model-info-card {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 16px;
-            border: 1px solid #dadce0;
-            border-radius: 8px;
-            background-color: #f8f9fa;
+            gap: 1rem;
+            padding-block: 1rem;
+            padding-inline: 1.125rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-element);
+            background-color: var(--surface-raised);
         }
+
         .model-info-detail {
             display: flex;
             flex-direction: column;
-            gap: 4px;
+            gap: 0.25rem;
         }
+
         .model-info-title {
             font-weight: 600;
-            color: #202124;
-            font-size: 14px;
+            color: var(--fg);
+            font-size: 0.875rem;
         }
+
         .model-info-desc {
-            font-size: 13px;
-            color: #5f6368;
+            font-size: 0.8125rem;
+            color: var(--fg-muted);
             margin: 0;
         }
+
         .model-badge {
-            background-color: #e8f0fe;
-            color: #1967d2;
-            font-size: 12px;
+            background-color: var(--primary-subtle);
+            color: var(--primary);
+            font-size: 0.75rem;
             font-weight: 600;
-            padding: 4px 10px;
-            border-radius: 12px;
+            padding-block: 0.25rem;
+            padding-inline: 0.625rem;
+            border-radius: 9999px;
             white-space: nowrap;
+            flex-shrink: 0;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Gemini Alt Text Generator 設定</h1>
-        <p>この拡張機能を使用するには、<a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer">Google AI Studio</a>または<a href="https://cloud.google.com/vertex-ai" target="_blank" rel="noopener noreferrer">Google Cloud Vertex AI</a>で取得したGemini APIキーが必要です。</p>
-        <p>APIキーはあなたのブラウザに安全に保存され、画像のAltテキスト生成にのみ使用されます。</p>
+    <main class="container">
+        <header class="header-section">
+            <h1>Gemini Alt Text Generator 設定</h1>
+            <p>この拡張機能を使用するには、<a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer">Google AI Studio</a>または<a href="https://cloud.google.com/vertex-ai" target="_blank" rel="noopener noreferrer">Google Cloud Vertex AI</a>で取得したGemini APIキーが必要です。</p>
+            <p>APIキーはあなたのブラウザに安全に保存され、画像のAltテキスト生成にのみ使用されます。</p>
+        </header>
 
-        <label for="geminiApiKey">Gemini API キー:</label>
-        <input type="password" id="geminiApiKey" placeholder="ここにAPIキーを入力してください…" autocomplete="off">
-        <button id="saveButton">APIキーを保存</button>
-        <div id="statusMessage"></div>
+        <section class="form-group">
+            <label for="geminiApiKey">Gemini API キー:</label>
+            <input type="password" id="geminiApiKey" placeholder="ここにAPIキーを入力してください…" autocomplete="off" spellcheck="false">
+        </section>
+
+        <button id="saveButton" type="button">APIキーを保存</button>
+        <div id="statusMessage" role="status" aria-live="polite"></div>
 
         <hr class="divider">
-        <h2>使用モデル</h2>
-        <div class="model-info-card">
-            <div class="model-info-detail">
-                <span class="model-info-title">Gemini 3.8 Flash</span>
-                <p class="model-info-desc">高速かつ高精度な最新世代モデルで Alt テキストを自動生成します。</p>
+
+        <section aria-labelledby="model-heading">
+            <h2 id="model-heading">使用モデル</h2>
+            <div class="model-info-card">
+                <div class="model-info-detail">
+                    <span class="model-info-title">Gemini 3.8 Flash</span>
+                    <p class="model-info-desc">高速かつ高精度な最新世代モデルで Alt テキストを自動生成します。</p>
+                </div>
+                <span class="model-badge">標準モデル</span>
             </div>
-            <span class="model-badge">標準モデル</span>
-        </div>
-    </div>
+        </section>
+    </main>
     <script src="options.js" defer></script>
 </body>
 </html>

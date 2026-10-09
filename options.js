@@ -24,7 +24,6 @@ document.addEventListener('DOMContentLoaded', () => {
             link.href = 'https://aistudio.google.com/';
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
-            link.style.cssText = 'color: #721c24; text-decoration: underline; margin-left: 5px;';
             link.textContent = 'APIキーの取得方法';
             fragment.append(link);
             showStatus(fragment, 'error');
