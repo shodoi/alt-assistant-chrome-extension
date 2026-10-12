@@ -156,4 +156,43 @@ node --test test/*.test.js
 # ℹ tests 37, suites 4, pass 37, fail 0
 ```
 
+---
+
+## 7. Issue 03: スクリーンリーダー向け状態通知（aria-live ライブリージョン対応）の実装
+
+### 課題と目的
+視覚的に画面を見ることができないスクリーンリーダー（VoiceOver, NVDA, JAWS 等）のユーザーにとって、Altテキスト生成のリクエスト送信後、バックグラウンドでのAI生成中・モデル切り替え・生成完了・エラー発生などの状態変化が音声としてアナウンスされない場合、処理が進行しているのか停止したのか判別がつかないというアクセシビリティ（A11y）上の重大な課題がありました。
+
+本改修では、W3C WAI-ARIA 仕様に準拠した `aria-live` ライブリージョン（`role="status"`, `role="alert"`）を導入し、ユーザーがフォーカスを動かさなくても、一連のライフサイクル状態が自然かつリアルタイムに読み上げられるシステムを構築しました。
+
+### 実施した主な改修
+1. **スクリーンリーダー専用アナウンサーモジュール (`utils/announcer.js`) の新設 (シームA)**
+   - `createAnnouncer(rootContainer)`:
+     - Shadow Root 直下に、視覚レイアウトを崩さないスクリーンリーダー専用ラッパー（`.gemini-sr-only`）を配置。
+     - 通常の進捗通知用 `polite` リージョン（`role="status"`, `aria-live="polite"`, `aria-atomic="true"`）と、緊急エラー通知用 `assertive` リージョン（`role="alert"`, `aria-live="assertive"`, `aria-atomic="true"`）の2系統を完全分離して管理。
+   - `announceStatus(text)`: 生成開始や進捗状況を作業中断させずに自然に読み上げ（polite）。
+   - `announceSuccess(altText, options)`: 生成完了時に「Altテキストの生成が完了しました。プレビュー: ○○」と要約付きで通知。
+   - `announceAlert(errorMessage)`: レート制限やAPIキーエラーを即座に割り込んで読み上げ（assertive）。
+   - 連続する同一メッセージがスクリーンリーダーで検知漏れしないよう、テキストノード更新の再検知制御（ゼロ幅スペース制御）を実装。
+2. **コンテンツスクリプト (`content.js`) とのライフサイクル統合 (シームB)**
+   - **生成開始時**: Service Worker からの `startAltTextGeneration` 受信時および指示ダイアログ送信時に「Altテキストを生成中…」を自動アナウンス。
+   - **進捗更新時**: `updateModelStatus` 受信時にモデルの処理状況（「画像を解析中…」等）を自動アナウンス。
+   - **生成完了時**: `handleUpdateAltText` 実行時に、生成されたAltテキストのプレビュー要約を自動アナウンス。
+   - **エラー発生時**: `handleError` および `showGlobalToast` で、レート制限（429）、APIキーエラー、一般エラーを即座に `role="alert"` で割り込み音声通知。
+   - **ユーザー操作フィードバック**: 「画像にAlt適用」ボタン押下時に「画像にAltテキストを適用しました」、「コピー」ボタン押下時に「Altテキストをクリップボードにコピーしました」を音声通知。
+3. **トーストバッジおよびアラートダイアログの ARIA セマンティクス強化**
+   - フローティングトースト（`showStatus`, `showGlobalToast`）に対して、ローディング・成功時は `role="status"` / `aria-live="polite"`、エラー・レート制限時は `role="alert"` / `aria-live="assertive"` を付与。
+   - エラーダイアログ（`showRateLimitDialog`, `showApiKeyErrorDialog`）に対して `role="alertdialog"` および `aria-describedby` を付与し、ダイアログ表示時に説明文が自動で読み上げられるよう最適化。
+4. **Visually Hidden スタイル (`.gemini-sr-only`) の導入**
+   - `GEMINI_SHADOW_STYLES` にアクセシビリティ標準の不可視スタイル（`position: absolute; inline-size: 1px; clip: rect(0,0,0,0);` 等）を追加し、レイアウトに影響を与えずにスクリーンリーダーだけに認知される構造を確立。
+
+### テストおよび検証結果
+Node.js 組み込みテストランナー (`node:test`) により、シームA（単体テスト12件）およびシームB（結合フローテスト7件）を含む全 56 件のテストケースがすべて正常に通過することを確認しました。
+
+```bash
+node --test test/*.test.js
+# ℹ tests 56, suites 4, pass 56, fail 0
+```
+
+
 

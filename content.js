@@ -604,6 +604,21 @@
             white-space: normal;
             max-inline-size: min(90vw, 480px);
         }
+
+        /* ==========================================================================
+           アクセシビリティ: スクリーンリーダー専用スタイル (Visually Hidden)
+           ========================================================================== */
+        .gemini-sr-only {
+            position: absolute !important;
+            inline-size: 1px !important;
+            block-size: 1px !important;
+            padding: 0 !important;
+            margin: -1px !important;
+            overflow: hidden !important;
+            clip: rect(0, 0, 0, 0) !important;
+            white-space: nowrap !important;
+            border-width: 0 !important;
+        }
     `;
 
     // --- Shadow DOM 管理 ---
@@ -650,6 +665,103 @@
         return getShadowRoot().getElementById(id);
     }
 
+    // --- スクリーンリーダー向け状態通知 (aria-live ライブリージョン) ---
+
+    /**
+     * スクリーンリーダー専用アナウンサー（ライブリージョン）を取得または初期化
+     * @returns {{ container: HTMLElement, politeNode: HTMLElement, assertiveNode: HTMLElement }}
+     */
+    function getAnnouncerInstance() {
+        const root = getShadowRoot();
+        if (typeof window !== 'undefined' && window.AltAssistantAnnouncer && typeof window.AltAssistantAnnouncer.createAnnouncer === 'function') {
+            return window.AltAssistantAnnouncer.createAnnouncer(root);
+        }
+
+        let container = root.querySelector('#gemini-announcer-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'gemini-announcer-container';
+            container.className = 'gemini-sr-only';
+
+            const politeNode = document.createElement('div');
+            politeNode.setAttribute('role', 'status');
+            politeNode.setAttribute('aria-live', 'polite');
+            politeNode.setAttribute('aria-atomic', 'true');
+            politeNode.className = 'gemini-live-polite';
+
+            const assertiveNode = document.createElement('div');
+            assertiveNode.setAttribute('role', 'alert');
+            assertiveNode.setAttribute('aria-live', 'assertive');
+            assertiveNode.setAttribute('aria-atomic', 'true');
+            assertiveNode.className = 'gemini-live-assertive';
+
+            container.appendChild(politeNode);
+            container.appendChild(assertiveNode);
+            root.appendChild(container);
+        }
+
+        return {
+            container,
+            politeNode: container.querySelector('[aria-live="polite"]'),
+            assertiveNode: container.querySelector('[aria-live="assertive"]')
+        };
+    }
+
+    /**
+     * ステータス通知（polite）を発行する
+     * @param {string} message
+     */
+    function announceStatus(message) {
+        if (!message) return;
+        if (typeof window !== 'undefined' && window.AltAssistantAnnouncer && typeof window.AltAssistantAnnouncer.announceStatus === 'function') {
+            window.AltAssistantAnnouncer.announceStatus(message, getAnnouncerInstance());
+            return;
+        }
+        const inst = getAnnouncerInstance();
+        if (inst && inst.politeNode) {
+            const clean = String(message).trim();
+            inst.politeNode.textContent = inst.politeNode.textContent === clean ? clean + '\u200B' : clean;
+        }
+    }
+
+    /**
+     * エラー通知（assertive / role="alert"）を発行する
+     * @param {string} message
+     */
+    function announceAlert(message) {
+        if (!message) return;
+        if (typeof window !== 'undefined' && window.AltAssistantAnnouncer && typeof window.AltAssistantAnnouncer.announceAlert === 'function') {
+            window.AltAssistantAnnouncer.announceAlert(message, getAnnouncerInstance());
+            return;
+        }
+        const inst = getAnnouncerInstance();
+        if (inst && inst.assertiveNode) {
+            const clean = String(message).trim();
+            const msg = clean.startsWith('エラー:') ? clean : `エラー: ${clean}`;
+            inst.assertiveNode.textContent = inst.assertiveNode.textContent === msg ? msg + '\u200B' : msg;
+        }
+    }
+
+    /**
+     * 生成完了通知（polite）を発行する
+     * @param {string} altText
+     * @param {number} [maxLen=80]
+     */
+    function announceSuccess(altText, maxLen = 80) {
+        if (!altText) return;
+        if (typeof window !== 'undefined' && window.AltAssistantAnnouncer && typeof window.AltAssistantAnnouncer.announceSuccess === 'function') {
+            window.AltAssistantAnnouncer.announceSuccess(altText, getAnnouncerInstance(), { maxPreviewLength: maxLen });
+            return;
+        }
+        const inst = getAnnouncerInstance();
+        if (inst && inst.politeNode) {
+            const clean = String(altText).trim();
+            const preview = clean.length > maxLen ? clean.slice(0, maxLen).trim() + '…' : clean;
+            const msg = `Altテキストの生成が完了しました。プレビュー: ${preview}`;
+            inst.politeNode.textContent = inst.politeNode.textContent === msg ? msg + '\u200B' : msg;
+        }
+    }
+
     // --- グローバル変数 ---
     let lastRightClickedElement = null;
 
@@ -679,6 +791,7 @@
                         showStatus(imageElementForStatus, message.statusText, 'loading');
                     }
                 }
+                announceStatus(message.statusText || '画像を解析中…');
                 break;
             }
 
@@ -690,6 +803,7 @@
                         showStatus(imageElementForLoading, 'AIで生成を開始...', 'loading');
                     }
                 }
+                announceStatus('Altテキストを生成中…');
                 break;
             }
 
@@ -703,6 +817,7 @@
                     handleError(imageElementForError, message);
                 } else {
                     showGlobalToast(`エラー: ${message.errorMessage}`, 'error');
+                    announceAlert(message.errorMessage || 'Altテキストの生成に失敗しました');
                 }
                 break;
             }
@@ -729,6 +844,9 @@
         if (existingStatus) {
             existingStatus.remove();
         }
+
+        // スクリーンリーダー向けに生成完了とプレビュー要約をアナウンス
+        announceSuccess(message.altText);
 
         const dialog = getGeminiElement('gemini-alt-dialog');
         if (dialog && dialog.dataset.imageSrc === message.imageUrl) {
@@ -1002,6 +1120,7 @@
         const performSubmit = () => {
             const promptVal = textArea.value.trim();
             if (!promptVal) return;
+            announceStatus('Altテキストの生成リクエストを送信しました。生成中…');
             onSubmit({
                 prompt: promptVal,
                 aiProvider: 'Gemini'
@@ -1016,12 +1135,17 @@
             }
         });
 
-        cancelButton.onclick = () => { onSubmit(null); closeDialog(); };
+        cancelButton.onclick = () => {
+            announceStatus('Altテキストの生成をキャンセルしました');
+            onSubmit(null);
+            closeDialog();
+        };
         submitButton.onclick = performSubmit;
 
         cleanupA11y = attachDialogAccessibility(dialog, {
             titleElement: titleElement,
             onClose: () => {
+                announceStatus('Altテキストの生成をキャンセルしました');
                 onSubmit(null);
                 dialog.remove();
             },
@@ -1115,6 +1239,7 @@
                 showStatus(imageElement, 'Altテキストを画像に適用しました ✓', 'success');
             }
 
+            announceStatus('画像にAltテキストを適用しました');
             closeDialog();
         };
 
@@ -1151,6 +1276,7 @@
 
             addMessageToChat(instruction, 'user', applyAltTextToImage);
             addMessageToChat('生成中…', 'loading', applyAltTextToImage);
+            announceStatus('再生成リクエストを送信しました。Altテキストを生成中…');
             toggleDialogInputs(dialog, false);
 
             chrome.runtime.sendMessage({
@@ -1252,6 +1378,7 @@
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(textToCopy).then(() => {
                         copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="var(--gemini-success)"/></svg>`;
+                        announceStatus('Altテキストをクリップボードにコピーしました');
                         setTimeout(() => {
                             copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
                         }, COPY_FEEDBACK_DURATION_MS);
@@ -1306,12 +1433,15 @@
             const successful = document.execCommand('copy');
             if (successful) {
                 buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="var(--gemini-success)"/></svg>`;
+                announceStatus('Altテキストをクリップボードにコピーしました');
             } else {
                 buttonElement.textContent = '✗';
+                announceAlert('クリップボードへのコピーに失敗しました');
             }
         } catch (err) {
             console.error('クリップボードコピー処理に失敗しました:', err);
             buttonElement.textContent = '✗';
+            announceAlert('クリップボードへのコピーに失敗しました');
         } finally {
             setTimeout(() => {
                 buttonElement.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
@@ -1360,11 +1490,14 @@
         if (isRateLimit) {
             showRateLimitDialog(message.modelLabel);
             showStatus(imageElement, `${provider}のレートリミット到達 (${message.modelLabel || ''})`, 'rate-limit');
+            announceAlert(`${provider}の利用上限（レート制限）に達しました。しばらく待ってから再試行してください。`);
         } else if (isApiKeyError) {
             showApiKeyErrorDialog(message.modelLabel);
             showStatus(imageElement, `${provider}のAPIキーエラー`, 'error');
+            announceAlert(`${provider}のAPIキーが無効または未設定です。設定画面を確認してください。`);
         } else {
             showStatus(imageElement, `エラー: ${message.errorMessage}`, 'error');
+            announceAlert(`Altテキスト生成エラー: ${message.errorMessage}`);
         }
     }
 
@@ -1372,7 +1505,7 @@
      * 画像上部に一時的なフローティングステータス（トーストバッジ）を表示
      * @param {HTMLImageElement} imageElement - 対象画像
      * @param {string} message - 表示メッセージ
-     * @param {'loading'|'rate-limit'|'error'} type - ステータス種別
+     * @param {'loading'|'rate-limit'|'error'|'success'} type - ステータス種別
      */
     function showStatus(imageElement, message, type) {
         const existingStatus = getShadowRoot().querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
@@ -1381,6 +1514,17 @@
         const statusDiv = document.createElement('div');
         statusDiv.className = `gemini-alt-status is-${type}`;
         statusDiv.setAttribute('data-image-src', imageElement.src);
+
+        // アクセシビリティ・ライブリージョン属性の付与
+        if (type === 'loading' || type === 'success') {
+            statusDiv.setAttribute('role', 'status');
+            statusDiv.setAttribute('aria-live', 'polite');
+            statusDiv.setAttribute('aria-atomic', 'true');
+        } else if (type === 'error' || type === 'rate-limit') {
+            statusDiv.setAttribute('role', 'alert');
+            statusDiv.setAttribute('aria-live', 'assertive');
+            statusDiv.setAttribute('aria-atomic', 'true');
+        }
 
         if (type === 'loading') {
             const spinner = document.createElement('span');
@@ -1399,7 +1543,7 @@
         statusDiv.style.insetBlockStart = `${imgRect.top + window.scrollY - 36}px`;
         statusDiv.style.insetInlineStart = `${imgRect.left + window.scrollX}px`;
 
-        if (type === 'error' || type === 'rate-limit') {
+        if (type === 'error' || type === 'rate-limit' || type === 'success') {
             setTimeout(() => {
                 if (statusDiv.parentNode) statusDiv.remove();
             }, STATUS_TOAST_DURATION_MS);
@@ -1409,7 +1553,7 @@
     /**
      * 画像要素が取得できない場合（不正なURLやDOM外のトリガー等）に画面上部へフォールバック表示するトースト
      * @param {string} message - 表示メッセージ
-     * @param {'error'|'rate-limit'|'loading'} [type='error'] - ステータス種別
+     * @param {'error'|'rate-limit'|'loading'|'success'} [type='error'] - ステータス種別
      */
     function showGlobalToast(message, type = 'error') {
         const existingStatus = getShadowRoot().querySelector('.gemini-alt-status.is-global');
@@ -1417,6 +1561,17 @@
 
         const statusDiv = document.createElement('div');
         statusDiv.className = `gemini-alt-status is-${type} is-global`;
+
+        // アクセシビリティ属性
+        if (type === 'error' || type === 'rate-limit') {
+            statusDiv.setAttribute('role', 'alert');
+            statusDiv.setAttribute('aria-live', 'assertive');
+            statusDiv.setAttribute('aria-atomic', 'true');
+        } else {
+            statusDiv.setAttribute('role', 'status');
+            statusDiv.setAttribute('aria-live', 'polite');
+            statusDiv.setAttribute('aria-atomic', 'true');
+        }
 
         const msgSpan = document.createElement('span');
         msgSpan.textContent = message;
@@ -1440,6 +1595,7 @@
         const dialog = document.createElement('div');
         dialog.id = 'gemini-error-dialog';
         dialog.className = 'gemini-dialog gemini-dialog-alert is-warning';
+        dialog.setAttribute('role', 'alertdialog');
 
         const title = document.createElement('h3');
         title.id = 'gemini-rate-limit-title';
@@ -1448,9 +1604,11 @@
         dialog.appendChild(title);
 
         const message = document.createElement('p');
+        message.id = 'gemini-rate-limit-desc';
         message.className = 'gemini-dialog-description';
         message.textContent = `Gemini API (${modelLabel || 'モデル'}) の利用制限に達しました。しばらく待ってから再試行してください。`;
         dialog.appendChild(message);
+        dialog.setAttribute('aria-describedby', message.id);
 
         const btnContainer = document.createElement('div');
         btnContainer.className = 'gemini-btn-row';
@@ -1488,6 +1646,7 @@
         const dialog = document.createElement('div');
         dialog.id = 'gemini-error-dialog';
         dialog.className = 'gemini-dialog gemini-dialog-alert is-danger';
+        dialog.setAttribute('role', 'alertdialog');
 
         const title = document.createElement('h3');
         title.id = 'gemini-apikey-error-title';
@@ -1496,9 +1655,11 @@
         dialog.appendChild(title);
 
         const message = document.createElement('p');
+        message.id = 'gemini-apikey-error-desc';
         message.className = 'gemini-dialog-description';
         message.textContent = 'APIキーが無効か、設定されていません。拡張機能のオプションページで正しいAPIキーを設定してください。';
         dialog.appendChild(message);
+        dialog.setAttribute('aria-describedby', message.id);
 
         const btnContainer = document.createElement('div');
         btnContainer.className = 'gemini-btn-row';
