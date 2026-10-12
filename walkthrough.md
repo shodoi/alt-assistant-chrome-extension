@@ -383,3 +383,22 @@ node --test test/*.test.js
 # ℹ duration_ms 2276.479309
 ```
 
+---
+
+## 12. Service Worker 登録失敗（Status code: 15 / isSvgImage 重複宣言）の修正
+
+### 不具合の事象と原因
+実ブラウザ（Chrome）上で拡張機能を読み込んだ際、以下のエラーが発生して Service Worker の登録に失敗（Status code: 15）していました：
+`Uncaught SyntaxError: Failed to execute 'importScripts' on 'WorkerGlobalScope': Identifier 'isSvgImage' has already been declared`
+
+- **根本原因**: `background.js` では `importScripts('utils/image-extractor.js', 'utils/image-fallback.js')` を同期実行していますが、両スクリプトは同一の `WorkerGlobalScope` で評価されます。`image-extractor.js` でトップレベルに関数 `function isSvgImage` や定数 `DEFAULT_MAX_DIMENSION` 等が宣言されているのに対し、後続の `image-fallback.js` 内で `const { isSvgImage, DEFAULT_MAX_DIMENSION, ... } = imageExtractorModule || {};` という分割代入による再宣言を行ったため、同一スコープ内での識別子多重宣言エラー（SyntaxError）が発生していました。
+
+### 実施した修正内容
+1. **トップレベル識別子の再宣言を解消 (`utils/image-fallback.js`)**:
+   - `const { isSvgImage, ... }` の直接宣言を撤廃。
+   - `_extractor = imageExtractorModule || self.AltAssistantImageExtractor || {}` を経由し、各関数・定数を `_isSvgImage`, `_validateAndParseDataUri`, `_rasterizeSvg`, `_DEFAULT_MAX_DATA_URI_SIZE` として安全に参照解決する構成へ刷新。
+2. **Service Worker スクリプト評価テストの新設 (`test/service-worker-load.test.js`)**:
+   - Node.js の `vm` モジュール（`vm.createContext` / `vm.runInContext`）を用い、Chrome Service Worker と同等の `WorkerGlobalScope` 環境を忠実に模擬。
+   - `background.js` が `importScripts` で読み込む全ユーティリティスクリプト（6ファイル）を同一コンテキスト内で連続評価し、構文エラー・宣言衝突・未定義関数が一切発生しないことを自動検証する回帰テストを追加（全151テスト通過）。
+
+

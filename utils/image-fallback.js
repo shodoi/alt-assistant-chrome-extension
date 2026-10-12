@@ -17,15 +17,17 @@ if (!imageExtractorModule && typeof self !== 'undefined' && self.AltAssistantIma
     imageExtractorModule = self.AltAssistantImageExtractor;
 }
 
-const {
-    isSvgImage = () => false,
-    validateAndParseDataUri = () => ({ valid: false }),
-    calculateScaledDimensions = (w, h) => ({ width: w, height: h }),
-    rasterizeSvg = async () => ({ success: false }),
-    DEFAULT_MAX_DIMENSION = 1536,
-    DEFAULT_MAX_DATA_URI_SIZE = 20 * 1024 * 1024,
-    DEFAULT_JPEG_QUALITY = 0.85
-} = imageExtractorModule || {};
+// Service Worker (WorkerGlobalScope) 等で既に同名識別子が宣言されている場合の再宣言SyntaxErrorを防ぐため、
+// 個別のトップレベル識別子の再宣言を避け、参照オブジェクト経由で安全に解決する
+const _extractor = imageExtractorModule || (typeof self !== 'undefined' ? self.AltAssistantImageExtractor : null) || {};
+
+const _isSvgImage = _extractor.isSvgImage || (typeof isSvgImage === 'function' ? isSvgImage : () => false);
+const _validateAndParseDataUri = _extractor.validateAndParseDataUri || (typeof validateAndParseDataUri === 'function' ? validateAndParseDataUri : () => ({ valid: false }));
+const _calculateScaledDimensions = _extractor.calculateScaledDimensions || (typeof calculateScaledDimensions === 'function' ? calculateScaledDimensions : (w, h) => ({ width: w, height: h }));
+const _rasterizeSvg = _extractor.rasterizeSvg || (typeof rasterizeSvg === 'function' ? rasterizeSvg : async () => ({ success: false }));
+const _DEFAULT_MAX_DIMENSION = _extractor.DEFAULT_MAX_DIMENSION ?? (typeof DEFAULT_MAX_DIMENSION !== 'undefined' ? DEFAULT_MAX_DIMENSION : 1536);
+const _DEFAULT_MAX_DATA_URI_SIZE = _extractor.DEFAULT_MAX_DATA_URI_SIZE ?? (typeof DEFAULT_MAX_DATA_URI_SIZE !== 'undefined' ? DEFAULT_MAX_DATA_URI_SIZE : 20 * 1024 * 1024);
+const _DEFAULT_JPEG_QUALITY = _extractor.DEFAULT_JPEG_QUALITY ?? (typeof DEFAULT_JPEG_QUALITY !== 'undefined' ? DEFAULT_JPEG_QUALITY : 0.85);
 
 /**
  * ArrayBuffer を Base64 文字列へ変換するヘルパー
@@ -65,7 +67,7 @@ function bufferToBase64Fallback(buffer) {
  * @param {number} [options.tabId] - タブID
  * @param {number} [options.frameId=0] - フレームID
  * @param {string} [options.targetElementId] - DOM上の対象要素ID
- * @param {number} [options.maxSizeBytes=DEFAULT_MAX_DATA_URI_SIZE] - Data URI 上限
+ * @param {number} [options.maxSizeBytes=_DEFAULT_MAX_DATA_URI_SIZE] - Data URI 上限
  * @param {Function} [options.optimizeImageBlob] - Blob 最適化関数
  * @returns {Promise<{ base64Image: string, mimeType: string }>} 最適化済み画像データ
  */
@@ -77,7 +79,7 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
     const tabId = options.tabId;
     const frameId = options.frameId ?? 0;
     const targetElementId = options.targetElementId;
-    const maxSizeBytes = options.maxSizeBytes ?? DEFAULT_MAX_DATA_URI_SIZE;
+    const maxSizeBytes = options.maxSizeBytes ?? _DEFAULT_MAX_DATA_URI_SIZE;
 
     if (!imageUrl || typeof imageUrl !== 'string') {
         throw new Error('画像URLが指定されていないか無効です。');
@@ -87,7 +89,7 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
 
     // --- 1. Data URI のハンドリング ---
     if (trimmedUrl.startsWith('data:')) {
-        const parsed = validateAndParseDataUri(trimmedUrl, { maxSizeBytes });
+        const parsed = _validateAndParseDataUri(trimmedUrl, { maxSizeBytes });
         if (!parsed.valid) {
             throw new Error(parsed.error || '無効な Data URI 画像です。');
         }
@@ -101,7 +103,7 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
                 }
             }
             // Service Worker 内でラスタライズ試行
-            const rasterResult = await rasterizeSvg(trimmedUrl);
+            const rasterResult = await _rasterizeSvg(trimmedUrl);
             if (rasterResult.success && rasterResult.base64Image) {
                 return { base64Image: rasterResult.base64Image, mimeType: rasterResult.mimeType || 'image/jpeg' };
             }
@@ -118,7 +120,7 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
     // --- 2. SVG 画像URLのハンドリング（拡張子 .svg 等） ---
     // Gemini API は SVG を直接受け付けないため、Service Worker fetch を経由せず
     // ページ上でレンダリングされている DOM/Canvas 経由でのラスタライズを最優先する
-    if (isSvgImage(trimmedUrl)) {
+    if (_isSvgImage(trimmedUrl)) {
         if (tabId && sendMessageFn) {
             const domResult = await requestDomImageExtraction(sendMessageFn, tabId, frameId, trimmedUrl, targetElementId);
             if (domResult.success && domResult.base64Image) {
@@ -146,7 +148,7 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
             const blobType = blob.type || '';
 
             // レスポンスが SVG だった場合のフォールバック
-            if (blobType.includes('image/svg+xml') || isSvgImage(trimmedUrl, blobType)) {
+            if (blobType.includes('image/svg+xml') || _isSvgImage(trimmedUrl, blobType)) {
                 if (tabId && sendMessageFn) {
                     const domResult = await requestDomImageExtraction(sendMessageFn, tabId, frameId, trimmedUrl, targetElementId);
                     if (domResult.success && domResult.base64Image) {
