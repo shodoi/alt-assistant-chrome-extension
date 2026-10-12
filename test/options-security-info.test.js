@@ -58,4 +58,16 @@ describe('シームB: options.html のセキュリティ・プライバシー説
             'セキュリティカードまたはバッジ用のスタイルクラスが options.html 内に定義されていること'
         );
     });
+
+    it('キーボードショートカットに関する案内セクションが存在すること', () => {
+        assert.ok(
+            htmlContent.includes('shortcut-heading') || htmlContent.includes('Alt + A'),
+            'キーボードショートカット（Alt+A）に関する案内が存在すること'
+        );
+        assert.ok(
+            htmlContent.includes('chrome://extensions/shortcuts'),
+            'ショートカットのカスタマイズ画面（chrome://extensions/shortcuts）への言及が存在すること'
+        );
+    });
 });
+

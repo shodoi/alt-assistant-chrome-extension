@@ -779,6 +779,13 @@
                 sendResponse({ status: 'ok', pong: true });
                 return false;
 
+            case 'detectFocusedImageForShortcut': {
+                // キーボードショートカット (chrome.commands) からの画像要素検出要請
+                const result = handleDetectFocusedImageForShortcut();
+                sendResponse(result);
+                return false;
+            }
+
             case 'showInstructionDialog':
                 showInstructionDialog((userChoice) => sendResponse(userChoice));
                 return true; // 非同期でsendResponseを呼び出すため
@@ -2037,6 +2044,195 @@
             }
             return { success: false, error: `Canvas画像抽出エラー: ${err.message}` };
         }
+    }
+
+    /**
+     * キーボードショートカット (chrome.commands / Alt+A) 起動時のフォーカス画像検出処理
+     * @returns {{ success: boolean, imageUrl?: string, targetElementId?: string, reason?: string, error?: string }}
+     */
+    function handleDetectFocusedImageForShortcut() {
+        if (typeof window !== 'undefined' && window.AltAssistantShortcutTrigger && typeof window.AltAssistantShortcutTrigger.triggerShortcutGeneration === 'function') {
+            const res = window.AltAssistantShortcutTrigger.triggerShortcutGeneration(document, {
+                onNotice: (msg, type) => showGlobalToast(msg, type),
+                announce: (msg) => announceAlert(msg)
+            });
+            if (res && res.success && res.element) {
+                lastRightClickedElement = res.element;
+            }
+            return res;
+        }
+
+        return triggerShortcutGenerationInternal();
+    }
+
+    /**
+     * フォーカス画像要素の検出と情報抽出を行う内部フォールバック実装
+     * @returns {{ success: boolean, imageUrl?: string, targetElementId?: string, reason?: string, error?: string }}
+     */
+    function triggerShortcutGenerationInternal() {
+        const activeEl = getDeepActiveElement(document);
+        const targetImage = findTargetImageFromActiveElementInternal(activeEl);
+
+        if (!targetImage) {
+            const guideMessage = 'Altテキストを生成する画像を選択（フォーカス）してください。';
+            showGlobalToast(guideMessage, 'info');
+            announceAlert(guideMessage);
+            return {
+                success: false,
+                reason: 'no_image_focused'
+            };
+        }
+
+        const info = extractTargetImageInfoInternal(targetImage);
+        if (!info.success) {
+            const errorMsg = info.error || '画像の読み込み情報が取得できませんでした。';
+            showGlobalToast(errorMsg, 'error');
+            return {
+                success: false,
+                reason: 'extract_failed',
+                error: errorMsg
+            };
+        }
+
+        // ダイアログクローズ時のフォーカス復帰先として記録
+        lastRightClickedElement = targetImage;
+
+        return {
+            success: true,
+            imageUrl: info.imageUrl,
+            targetElementId: info.targetElementId
+        };
+    }
+
+    /**
+     * アクティブ要素から対象画像要素を判定する内部フォールバック
+     * @param {Element|null} activeEl
+     * @returns {Element|null}
+     */
+    function findTargetImageFromActiveElementInternal(activeEl) {
+        if (!activeEl || (activeEl.tagName && ['BODY', 'HTML'].includes(activeEl.tagName.toUpperCase()))) {
+            return findHoveredImageInternal();
+        }
+
+        const tagName = (activeEl.tagName || '').toUpperCase();
+
+        if (tagName === 'IMG') return activeEl;
+        if (tagName === 'SVG') return activeEl;
+        if (typeof activeEl.closest === 'function') {
+            const svg = activeEl.closest('svg');
+            if (svg) return svg;
+        }
+
+        if (tagName === 'PICTURE') {
+            const img = activeEl.querySelector?.('img');
+            if (img) return img;
+        }
+        if (typeof activeEl.closest === 'function') {
+            const pic = activeEl.closest('picture');
+            if (pic) {
+                const img = pic.querySelector?.('img');
+                if (img) return img;
+            }
+        }
+
+        if (typeof activeEl.querySelector === 'function') {
+            const img = activeEl.querySelector('img');
+            if (img) return img;
+            const svg = activeEl.querySelector('svg');
+            if (svg) return svg;
+        }
+
+        if (activeEl.getAttribute?.('role') === 'img') {
+            const img = activeEl.querySelector?.('img, svg');
+            return img || activeEl;
+        }
+
+        if (typeof activeEl.closest === 'function') {
+            const figure = activeEl.closest('figure');
+            if (figure) {
+                const img = figure.querySelector?.('img, svg');
+                if (img) return img;
+            }
+        }
+
+        return findHoveredImageInternal();
+    }
+
+    /**
+     * ホバー中の画像要素を検出する内部フォールバック
+     * @returns {Element|null}
+     */
+    function findHoveredImageInternal() {
+        try {
+            const hovered = document.querySelector('img:hover, svg:hover, picture:hover img, [role="img"]:hover');
+            if (hovered) {
+                if (hovered.tagName?.toUpperCase() === 'PICTURE') {
+                    return hovered.querySelector('img') || hovered;
+                }
+                return hovered;
+            }
+        } catch {
+            // :hover 疑似クラス非対応環境
+        }
+        return null;
+    }
+
+    /**
+     * 画像要素から画像URL・一意IDを抽出する内部フォールバック
+     * @param {Element} imageEl
+     * @returns {{ success: boolean, imageUrl?: string, targetElementId?: string, error?: string }}
+     */
+    function extractTargetImageInfoInternal(imageEl) {
+        if (!imageEl) return { success: false, error: '画像要素がありません。' };
+
+        let targetElementId = imageEl.id || imageEl.getAttribute?.('id');
+        if (!targetElementId) {
+            targetElementId = `gemini-shortcut-target-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            imageEl.setAttribute('id', targetElementId);
+            imageEl.id = targetElementId;
+        }
+
+        let imageUrl = '';
+        const tagName = (imageEl.tagName || '').toUpperCase();
+
+        if (tagName === 'IMG') {
+            imageUrl = imageEl.currentSrc || imageEl.getAttribute?.('src') || imageEl.src || '';
+            if (!imageUrl) {
+                imageUrl = imageEl.getAttribute?.('data-src') || imageEl.getAttribute?.('data-lazy-src') || '';
+            }
+        } else if (tagName === 'SVG' || (typeof imageEl.closest === 'function' && imageEl.closest('svg'))) {
+            const svgEl = tagName === 'SVG' ? imageEl : imageEl.closest('svg');
+            let svgString = '';
+            if (typeof XMLSerializer !== 'undefined') {
+                try {
+                    svgString = new XMLSerializer().serializeToString(svgEl);
+                } catch {
+                    svgString = svgEl.outerHTML || '';
+                }
+            } else {
+                svgString = svgEl.outerHTML || '';
+            }
+            if (svgString) {
+                imageUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
+            }
+        } else if (imageEl.getAttribute?.('role') === 'img') {
+            const bg = imageEl.style?.backgroundImage || '';
+            const bgMatch = bg.match(/url\(["']?([^"']+)["']?\)/i);
+            if (bgMatch) {
+                imageUrl = bgMatch[1];
+            } else {
+                const childImg = imageEl.querySelector?.('img');
+                if (childImg) {
+                    imageUrl = childImg.currentSrc || childImg.src || '';
+                }
+            }
+        }
+
+        if (!imageUrl) {
+            return { success: false, error: '画像URLを取得できませんでした。', targetElementId };
+        }
+
+        return { success: true, imageUrl, targetElementId };
     }
 
 })();

@@ -327,6 +327,59 @@ Node.js 組み込みテストランナー (`node:test`) により、シームA�
 ```bash
 node --test test/*.test.js
 # ℹ tests 117, suites 14, pass 117, fail 0
-```
+---
 
+## 11. Issue 07: キーボードショートカット起動（chrome.commands / Alt+A）対応の実装
+
+### 課題と目的
+マウスの右クリック（コンテキストメニュー）を操作できないキーボードオンリーユーザーやスクリーンリーダー（NVDA / VoiceOver 等）の利用者にとって、画像要素の Alt テキスト生成機能を起動する手段が存在しないという重大なアクセシビリティ（A11y）上の障壁がありました。
+
+本改修では、Chrome Extensions の `chrome.commands` API を利用してキーボードショートカット（デフォルト: `Alt+A` / macOS では `Option+A`）を定義し、キー入力一発でAltテキスト生成フローを直接起動できるようにしました。また、Webページ上でフォーカスされている要素やその周辺から対象画像をスマートに特定し、画像以外の要素でショートカットが実行された場合にもスクリーンリーダーおよび画面トーストを通じて親切なガイドを案内する、安全かつ使いやすいアクセシビリティ設計を実現しました。
+
+### 実施した主な改修
+
+1. **`manifest.json` への `chrome.commands` 定義追加 (シームA)**
+   - `commands` 定義に `trigger_alt_generator` コマンドを追加。
+   - `suggested_key` に `default: "Alt+A"` および `mac: "Alt+A"`（macOS 上では Option+A として認識）を指定。
+   - `description` に「フォーカス中の画像に対してAltテキスト生成を開始」を明記し、ブラウザのショートカット管理画面（`chrome://extensions/shortcuts`）からユーザーがいつでも自由にキーバインドをカスタマイズ・変更できるように整備。
+
+2. **スマート画像検出・情報抽出ロジックのモジュール化 (`utils/shortcut-trigger.js`) (シームB)**
+   - **深層アクティブ要素の特定**: `getDeepActiveElement` により Shadow DOM 内のアクティブ要素まで正確に検出。
+   - **多層的画像判定 (`findTargetImageFromActiveElement`)**:
+     1. `<img>` 要素自身にフォーカスがある場合: その `<img>` を採用
+     2. `<svg>` 要素または内部の `<path>` 等にフォーカスがある場合: 親の `<svg>` を採用
+     3. `<picture>` 要素または `<source>` にフォーカスがある場合: 内部の `<img>` を採用
+     4. リンク `<a>` や `<button>`、`<figure>` などのインタラクティブコンテナにフォーカスがある場合: 内部に含まれる `<img>` または `<svg>` をスマート検出
+     5. `role="img"` を持つ要素にフォーカスがある場合: 自身または内部画像を検出
+     6. フォーカスがページ全体（`body`）にある場合: マウスホバー中の画像（`:hover`）をフォールバック探索
+   - **画像情報抽出 (`extractTargetImageInfo`)**:
+     - `<img>` の `currentSrc` / `src` / `data-src`（遅延読み込み画像対応）を安全に取得。
+     - インライン `<svg>` 要素の場合は XMLSerializer により `data:image/svg+xml;charset=utf-8,...` 形式の Data URI を生成し、Service Worker 側の SVG ラスタライズフローへシームレスに連携。
+     - 対象要素に `id` がない場合は一意の ID（`gemini-shortcut-target-...`）を動的に採番して付与。
+   - **親切なガイド通知 (`triggerShortcutGeneration`)**:
+     - 画像以外の要素（テキスト入力欄や段落など）でショートカットが押された際、誤作動せず安全に終了し、同時に「Altテキストを生成する画像を選択（フォーカス）してください。」というガイドをトースト表示およびスクリーンリーダー向け音声（`announceAlert`）で案内。
+
+3. **Service Worker (`background.js` / `utils/command-handler.js`) でのコマンド受付と通信制御 (シームC)**
+   - `chrome.commands.onCommand.addListener` を登録し、`trigger_alt_generator` コマンドを受信。
+   - `chrome://` や `chrome-extension://` などの保護URLでは安全にバイパス。
+   - 対象タブへ `ensureContentScriptReady` でハンドシェイク疎通を確認後、`detectFocusedImageForShortcut` メッセージを送信。
+   - 画像が検出された場合は、既存の `startGenerationProcess(imageUrl, tab.id, 0, targetElementId)` を起動し、右クリック時と同様の指示入力ダイアログ（`showInstructionDialog`）およびチャットダイアログ（`showAltTextDialog`）へ接続。
+
+4. **コンテンツスクリプト (`content.js`) の統合とフォーカス復帰設計 (シームD)**
+   - `chrome.runtime.onMessage.addListener` に `case 'detectFocusedImageForShortcut':` を追加。
+   - ショートカット起動時に検出された画像要素を `lastRightClickedElement` に記憶させ、ダイアログクローズ時（キャンセル時やAlt適用完了時）に元の画像要素へフォーカスが確実に復帰するよう設計（WCAG 2.4.3 / 2.4.7 準拠）。
+   - 外部スクリプトの依存関係に左右されない内部フォールバック実装（`triggerShortcutGenerationInternal`）を内蔵。
+
+5. **オプション画面 (`options.html`) へのキーボード操作案内追加**
+   - 設定画面に「キーボードショートカット」案内セクションを追加。
+   - デフォルトキー（`Alt+A` / `Option+A`）と使い方、および `chrome://extensions/shortcuts` で好みのキーに変更できる旨を視覚的にわかりやすく掲載。
+
+### テストおよび検証結果
+Node.js 組み込みテストランナー (`node:test`) により、シームA〜Dに渡るテストケースを計31件新規作成し、全 148 件のテストがすべて合格（All Green）することを確認しました。
+
+```bash
+node --test test/*.test.js
+# ℹ tests 148, suites 14, pass 148, fail 0, cancelled 0, skipped 0, todo 0
+# ℹ duration_ms 2276.479309
+```
 

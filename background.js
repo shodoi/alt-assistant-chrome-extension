@@ -1,7 +1,7 @@
 // background.js
 
 // ユーティリティスクリプトの同期読み込み (Service Worker)
-importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js', 'utils/image-extractor.js', 'utils/image-fallback.js');
+importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js', 'utils/image-extractor.js', 'utils/image-fallback.js', 'utils/command-handler.js');
 
 // --- 定数定義 (Constants) ---
 /** 使用するGeminiモデルID（高速かつ高性能な最新Flashモデル） */
@@ -266,6 +266,18 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === "instructWithGemini") {
         startGenerationProcess(info.srcUrl, tab.id, info.frameId, info.targetElementId);
+    }
+});
+
+// キーボードショートカット (chrome.commands / Alt+A) リスナー
+chrome.commands.onCommand.addListener(async (command, tab) => {
+    if (typeof handleCommandShortcut === 'function') {
+        await handleCommandShortcut(command, tab, {
+            ensureContentScriptReady,
+            sendMessage: (tabId, msg) => chrome.tabs.sendMessage(tabId, msg),
+            queryTabs: (query) => chrome.tabs.query(query),
+            startGenerationProcess
+        });
     }
 });
 
