@@ -1,7 +1,7 @@
 // background.js
 
 // ユーティリティスクリプトの同期読み込み (Service Worker)
-importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js');
+importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js', 'utils/image-extractor.js', 'utils/image-fallback.js');
 
 // --- 定数定義 (Constants) ---
 /** 使用するGeminiモデルID（高速かつ高性能な最新Flashモデル） */
@@ -89,7 +89,7 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
                 action: "startAltTextGeneration", imageUrl, targetElementId, frameId 
             }, { frameId });
 
-            const result = await generateAltText(imageUrl, finalPrompt, tabId, frameId);
+            const result = await generateAltText(imageUrl, finalPrompt, tabId, frameId, targetElementId);
             
             if (result.success) {
                 chrome.tabs.sendMessage(tabId, { 
@@ -143,12 +143,13 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
  * @param {string} promptText - 指示プロンプト
  * @param {number} tabId - タブID
  * @param {number} frameId - フレームID
+ * @param {string} [targetElementId] - 対象要素ID
  * @returns {Promise<{ success: boolean, altText?: string, errorMessage?: string, errorDetails?: object, errorType?: string }>}
  */
-async function generateAltText(imageUrl, promptText, tabId, frameId) {
+async function generateAltText(imageUrl, promptText, tabId, frameId, targetElementId = null) {
     try {
-        // 画像を一度だけ取得・最適化（リサイズ & JPEG圧縮）
-        const preparedImage = await prepareOptimizedImage(imageUrl);
+        // 画像を一度だけ取得・最適化（SVGラスタライズ & CORSフォールバック対応）
+        const preparedImage = await prepareOptimizedImage(imageUrl, tabId, frameId, targetElementId);
 
         // UIに「3.8 Flash で生成中...」と通知
         chrome.tabs.sendMessage(tabId, { 
@@ -379,13 +380,25 @@ async function optimizeImageBlob(originalBlob, maxDimension = MAX_IMAGE_DIMENSIO
 /**
  * 画像URLを取得・最適化し、API送信用の Base64 文字列と MIME タイプを生成する
  * 
- * フォールバック処理で複数モデルへ順次問い合わせる際、モデル切り替えごとに
- * 重複して fetch や画像圧縮を行わないよう、共通処理としてキャッシュ可能な形式で準備する。
+ * SVG画像のDOM/Canvasラスタライズや、CORS制限画像に対するContent Scriptへの
+ * 安全なフォールバックチェーン（prepareOptimizedImageWithFallback）を実行する。
  *
  * @param {string} imageUrl - 取得対象の画像URL
+ * @param {number|null} [tabId=null] - タブID
+ * @param {number} [frameId=0] - フレームID
+ * @param {string|null} [targetElementId=null] - 対象要素ID
  * @returns {Promise<{ base64Image: string, mimeType: string }>} 最適化済み画像データ
  */
-async function prepareOptimizedImage(imageUrl) {
+async function prepareOptimizedImage(imageUrl, tabId = null, frameId = 0, targetElementId = null) {
+    if (typeof prepareOptimizedImageWithFallback === 'function') {
+        return prepareOptimizedImageWithFallback(imageUrl, {
+            tabId,
+            frameId,
+            targetElementId,
+            optimizeImageBlob
+        });
+    }
+
     const response = await fetch(imageUrl);
     if (!response.ok) {
         throw new Error(`画像の取得に失敗: ${response.status} ${response.statusText}`);

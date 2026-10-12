@@ -249,3 +249,48 @@ Node.js 組み込みテストランナー (`node:test`) により、シームA�
 node --test test/*.test.js
 # ℹ tests 78, suites 12, pass 78, fail 0
 ```
+
+---
+
+## 9. Issue 05: SVGラスタライズおよびCORS制限画像のフォールバックの実装
+
+### 課題と目的
+Webページ上の画像は、標準的なラスター形式（JPEG/PNG/WebP）だけでなく、ベクター画像（SVG形式）や認証が必要な画像、サードパーティドメインから配信されるクロスオリジン（CORS）制限画像など多様な形態が存在します。
+従来の拡張機能では以下の課題がありました：
+1. **SVGベクター画像の未対応**: Gemini API のマルチモーダル画像入力は SVG 形式（`image/svg+xml`）を直接解釈できないため、ベクター画像に対してAltテキスト生成を実行すると失敗する。
+2. **CORSおよび認証保護による取得制限**: Service Worker からの直接 `fetch(imageUrl)` では、Cookie認証が必要な画像やCORSヘッダーが欠落している外部画像で 401/403 や `Failed to fetch` が発生し、Alt生成が中断される。
+3. **極大Data URIや不正データによるクラッシュリスク**: 数十MBにおよぶ巨大Data URI画像や不正構文のSVGが指定された場合、ブラウザのIPCメッセージ上限やメモリ枯渇を引き起こすリスクがある。
+
+本改修では、SVG画像をCanvas経由でJPEG/PNGラスター画像へ安全にラスタライズ（ベクター→ラスター変換）し、さらにService Workerで取得できない画像に対してContent Script側のDOM/Canvas描画を活用したフォールバックチェーン（Fallback Chain）を構築しました。
+
+### 実施した主な改修
+1. **画像ラスタライズ & DOM画像抽出モジュール (`utils/image-extractor.js`) の新設 (シームA)**
+   - `isSvgImage(url, mimeType)`: URL拡張子（`.svg`）、Data URI（`data:image/svg+xml`）、MIMEタイプから高精度にSVG形式を判定。
+   - `validateAndParseDataUri(dataUri, options)`: 20MBの上限サイズ検証、構文解析、Base64データの安全な抽出。巨大データによるメモリ枯渇・クラッシュを防止。
+   - `calculateScaledDimensions(width, height, maxDimension)`: アスペクト比を維持しながら最大寸法（1536px）にスケーリング計算。
+   - `rasterizeSvg(svgSource, options)`: SVG文字列またはBlobをブラウザのCanvas/Image経由でJPEG（白背景下地付き）にラスタライズ。構文エラー時も安全に例外ハンドリング。
+   - `extractImageFromDomElement(element, options)`: DOM上の `<img>` 要素または `<svg>` インライン要素からCanvas経由でBase64データを抽出。CORS制限による汚染キャンバス（Tainted Canvas: `SecurityError`）を安全に検知し、クラッシュせず `isCorsBlocked: true` を報告。
+2. **Service Worker ↔ Content Script 画像フォールバック連携モジュール (`utils/image-fallback.js`) の新設 (シームB)**
+   - `prepareOptimizedImageWithFallback(imageUrl, options)`:
+     - **第1段階**: Data URI の場合、サイズ上限と構文を検証。SVGであればDOMラスタライズへ委譲。
+     - **第2段階**: SVG画像URLの場合、Service Worker fetch をバイパスし、Content Script 側の DOM/Canvas ラスタライズを最優先実行。
+     - **第3段階**: 通常画像URLの場合、まず Service Worker の直接 fetch を試行。レスポンスがSVGならラスタライズへフォールバック。
+     - **第4段階**: fetch が 401/403/CORSエラー等で失敗した場合、Content Script への `extractImageFromDom` メッセージを通じて、ページ上に既にレンダリングされている `<img>` 要素からCanvas経由でピクセルを救出。
+     - **第5段階**: Content Script 側でもCORS汚染により取得不可となった場合は、ユーザー向けに親切な日本語案内（「Webサイトのセキュリティ制限（CORS）により取得できませんでした」）をスロー。
+3. **コンテンツスクリプト (`content.js`) の画像抽出ハンドラ & CORS案内ダイアログ実装 (シームB)**
+   - `chrome.runtime.onMessage.addListener` に `case 'extractImageFromDom':` を新設し、DOM画像救出リクエストに非同期応答。
+   - インライン `<svg>` 要素および子要素（`<path>` 等）の右クリック時も `element.closest('svg')` によりSVG全体を正確に捕捉してシリアライズ＆ラスタライズ。
+   - `handleError` に `isCorsBlocked` 分岐を追加し、「🚫 画像のセキュリティ（CORS）制限」見出しと親切な代替案（別画像のお試しや保存確認）をモーダルダイアログで表示。
+4. **サービスワーカー (`background.js`) での統合作業**
+   - `importScripts('utils/image-extractor.js', 'utils/image-fallback.js')` を追加。
+   - `generateAltText` および `prepareOptimizedImage` において `targetElementId` を連携し、フォールバックチェーンを完全統合。
+   - `classifyApiError` (`utils/retry.js`) に `CORS_RESTRICTED` カテゴリを新設。
+
+### テストおよび検証結果
+Node.js 組み込みテストランナー (`node:test`) により、シームA（単体テスト23件）およびシームB（結合フローテスト6件）を追加し、既存テストを含む全 107 件のテストケースがすべて正常に通過することを確認しました。
+
+```bash
+node --test test/*.test.js
+# ℹ tests 107, suites 12, pass 107, fail 0
+```
+

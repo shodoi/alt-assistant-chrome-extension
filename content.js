@@ -817,6 +817,11 @@
                 handleUpdateAltText(message);
                 break;
 
+            case 'extractImageFromDom':
+                // Service Worker からの DOM 経由画像抽出要請 (SVGラスタライズおよびCORSフォールバック)
+                handleExtractImageFromDom(message, sendResponse);
+                return true; // 非同期でsendResponseを呼び出すため
+
             case 'errorAltTextGeneration': {
                 const imageElementForError = findImageElement(message.imageUrl) || lastRightClickedElement;
                 if (imageElementForError) {
@@ -1529,6 +1534,12 @@
             userMsg.includes('ネットワーク') ||
             userMsg.includes('通信');
 
+        const isCorsBlocked = errorType === 'CORS_RESTRICTED' ||
+            message.isCorsBlocked ||
+            userMsg.includes('CORS') ||
+            userMsg.includes('セキュリティ制限') ||
+            userMsg.includes('クロスオリジン');
+
         if (isRateLimit) {
             showRateLimitDialog(errorDetails || { modelLabel, userMessage: userMsg });
             showStatus(imageElement, `${provider}の利用制限到達 (${modelLabel})`, 'rate-limit');
@@ -1541,6 +1552,13 @@
             showNetworkErrorDialog(errorDetails || { userMessage: userMsg });
             showStatus(imageElement, 'ネットワーク通信エラー', 'error');
             announceAlert(userMsg || 'サーバーとの通信に失敗しました。インターネット接続を確認して再試行してください。');
+        } else if (isCorsBlocked) {
+            showGeneralErrorDialog({
+                title: '🚫 画像のセキュリティ（CORS）制限',
+                userMessage: userMsg || 'この画像はWebサイトのセキュリティ制限（CORS）または認証保護により取得できませんでした。別の画像をお試しいただくか、画像をローカルに保存してご確認ください。'
+            });
+            showStatus(imageElement, 'CORS制限により画像取得不可', 'error');
+            announceAlert(userMsg || 'この画像はセキュリティ制限（CORS）により取得できませんでした。');
         } else {
             showGeneralErrorDialog(errorDetails || { userMessage: userMsg });
             showStatus(imageElement, `エラー: ${userMsg}`, 'error');
@@ -1849,6 +1867,176 @@
             initialFocusElement: closeBtn,
             restoreFocusElement: lastRightClickedElement
         });
+    }
+
+    /**
+     * Service Worker からの DOM 経由画像抽出要請 (SVGラスタライズおよびCORSフォールバック) を処理する
+     * @param {object} message
+     * @param {Function} sendResponse
+     */
+    async function handleExtractImageFromDom(message, sendResponse) {
+        try {
+            let targetElement = null;
+            if (message.targetElementId) {
+                targetElement = document.getElementById(message.targetElementId);
+            }
+            if (!targetElement && message.imageUrl) {
+                targetElement = findImageElement(message.imageUrl);
+            }
+            if (!targetElement && lastRightClickedElement) {
+                targetElement = (lastRightClickedElement.tagName === 'SVG' || lastRightClickedElement.closest?.('svg')) ?
+                    (lastRightClickedElement.tagName === 'SVG' ? lastRightClickedElement : lastRightClickedElement.closest('svg')) :
+                    ((lastRightClickedElement.tagName === 'IMG' ? lastRightClickedElement : null) || lastRightClickedElement);
+            }
+
+            if (!targetElement) {
+                sendResponse({ success: false, error: 'ページ内で画像要素が見つかりませんでした。' });
+                return;
+            }
+
+            // グローバルモジュール（AltAssistantImageExtractor）が存在すれば優先利用
+            if (typeof window !== 'undefined' && window.AltAssistantImageExtractor && typeof window.AltAssistantImageExtractor.extractImageFromDomElement === 'function') {
+                const result = await window.AltAssistantImageExtractor.extractImageFromDomElement(targetElement);
+                sendResponse(result);
+                return;
+            }
+
+            // インラインフォールバック抽出
+            const result = await extractImageFromDomElementInternal(targetElement);
+            sendResponse(result);
+        } catch (err) {
+            sendResponse({ success: false, error: `DOM画像抽出処理で例外が発生しました: ${err.message}` });
+        }
+    }
+
+    /**
+     * DOM要素（HTMLImageElement または SVGElement）から Canvas 経由で Base64 ラスター画像を抽出する内部ヘルパー
+     * @param {HTMLElement|SVGElement} element
+     * @returns {Promise<{ success: boolean, base64Image?: string, mimeType?: string, isCorsBlocked?: boolean, error?: string }>}
+     */
+    async function extractImageFromDomElementInternal(element) {
+        if (!element) return { success: false, error: '対象要素がありません。' };
+
+        const tagName = (element.tagName || '').toUpperCase();
+        const maxDimension = 1536;
+
+        // 1. インライン <svg> 要素の場合: XMLSerializer でシリアライズし、Blob/Image 経由で Canvas にラスタライズ
+        if (tagName === 'SVG' || element.closest?.('svg')) {
+            const svgEl = tagName === 'SVG' ? element : element.closest('svg');
+            let svgString = '';
+            if (typeof XMLSerializer !== 'undefined') {
+                svgString = new XMLSerializer().serializeToString(svgEl);
+            } else if (svgEl.outerHTML) {
+                svgString = svgEl.outerHTML;
+            }
+
+            if (!svgString) {
+                return { success: false, error: 'SVG要素のシリアライズに失敗しました。' };
+            }
+
+            const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+            const blobUrl = URL.createObjectURL(svgBlob);
+
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                const cleanup = () => URL.revokeObjectURL(blobUrl);
+
+                img.onload = () => {
+                    try {
+                        const origW = img.naturalWidth || img.width || 800;
+                        const origH = img.naturalHeight || img.height || 600;
+                        let w = origW;
+                        let h = origH;
+                        if (w > maxDimension || h > maxDimension) {
+                            if (w > h) {
+                                h = Math.round((h * maxDimension) / w);
+                                w = maxDimension;
+                            } else {
+                                w = Math.round((w * maxDimension) / h);
+                                h = maxDimension;
+                            }
+                        }
+
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.max(1, w);
+                        canvas.height = Math.max(1, h);
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        cleanup();
+
+                        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                        const commaIdx = dataUrl.indexOf(',');
+                        const base64Data = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : '';
+                        resolve({ success: true, base64Image: base64Data, mimeType: 'image/jpeg' });
+                    } catch (e) {
+                        cleanup();
+                        resolve({ success: false, error: `SVGラスタライズ描画エラー: ${e.message}` });
+                    }
+                };
+
+                img.onerror = () => {
+                    cleanup();
+                    resolve({ success: false, error: 'SVG画像のロードに失敗しました。' });
+                };
+
+                img.src = blobUrl;
+            });
+        }
+
+        // 2. <img> または Image 要素の場合: Canvas に描画して Base64 出力
+        const origW = element.naturalWidth || element.width || element.clientWidth || 800;
+        const origH = element.naturalHeight || element.height || element.clientHeight || 600;
+        let w = origW;
+        let h = origH;
+        if (w > maxDimension || h > maxDimension) {
+            if (w > h) {
+                h = Math.round((h * maxDimension) / w);
+                w = maxDimension;
+            } else {
+                w = Math.round((w * maxDimension) / h);
+                h = maxDimension;
+            }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, w);
+        canvas.height = Math.max(1, h);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+            return { success: false, error: 'Canvasコンテキストを取得できませんでした。' };
+        }
+
+        try {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(element, 0, 0, canvas.width, canvas.height);
+
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            const commaIdx = dataUrl.indexOf(',');
+            const base64Data = commaIdx !== -1 ? dataUrl.slice(commaIdx + 1) : '';
+
+            return {
+                success: true,
+                base64Image: base64Data,
+                mimeType: 'image/jpeg'
+            };
+        } catch (err) {
+            // クロスオリジン制限による汚染キャンバス (SecurityError) の検知
+            const isSec = err.name === 'SecurityError' ||
+                          (err.message && err.message.toLowerCase().includes('tainted')) ||
+                          (err.message && err.message.toLowerCase().includes('security'));
+            if (isSec) {
+                return {
+                    success: false,
+                    isCorsBlocked: true,
+                    error: 'この画像はクロスオリジン制限（CORS）によりブラウザからピクセルを直接抽出できませんでした。'
+                };
+            }
+            return { success: false, error: `Canvas画像抽出エラー: ${err.message}` };
+        }
     }
 
 })();

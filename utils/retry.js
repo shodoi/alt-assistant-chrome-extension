@@ -215,7 +215,25 @@ function classifyApiError(error) {
         };
     }
 
-    // 5. その他の予期せぬエラー (Unknown Error)
+    // 5. CORS / セキュリティ制限による画像取得失敗 (CORS / Cross-Origin Restriction)
+    if (
+        error?.isCorsBlocked ||
+        messageLower.includes('cors') ||
+        messageLower.includes('tainted') ||
+        messageLower.includes('セキュリティ制限') ||
+        messageLower.includes('クロスオリジン')
+    ) {
+        return {
+            type: 'CORS_RESTRICTED',
+            title: '🚫 画像のセキュリティ（CORS）制限',
+            userMessage: 'この画像はWebサイトのセキュリティ制限（CORS）または認証保護により取得できませんでした。別の画像をお試しいただくか、画像を保存してご確認ください。',
+            action: 'none',
+            status: 403,
+            rawMessage
+        };
+    }
+
+    // 6. その他の予期せぬエラー (Unknown Error)
     return {
         type: 'UNKNOWN',
         title: '⚠️ エラーが発生しました',

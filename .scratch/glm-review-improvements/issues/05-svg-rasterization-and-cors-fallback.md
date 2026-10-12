@@ -5,8 +5,8 @@
 
 **Blocked by:** 01: SW–ContentScript間の通信健全化（PINGハンドシェイク & 画像URLバリデーション）
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `image/svg+xml` 形式または拡張子が `.svg` の画像を選択した際、適切にラスタライズされて Gemini API が正常にAltテキストを生成できること
-- [ ] Service Worker 側の直接 fetch で 401/403 や CORS エラーになる画像について、Content Script 側から Canvas 経由で取得するフォールバック処理が機能すること
-- [ ] 極端に巨大な Data URI 画像や不正な SVG 画像が指定された場合も、クラッシュせず安全にハンドリングされること
+- [x] `image/svg+xml` 形式または拡張子が `.svg` の画像を選択した際、適切にラスタライズされて Gemini API が正常にAltテキストを生成できること
+- [x] Service Worker 側の直接 fetch で 401/403 や CORS エラーになる画像について、Content Script 側から Canvas 経由で取得するフォールバック処理が機能すること
+- [x] 極端に巨大な Data URI 画像や不正な SVG 画像が指定された場合も、クラッシュせず安全にハンドリングされること
