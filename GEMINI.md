@@ -32,3 +32,12 @@ To acquire a Gemini API key, visit https://aistudio.google.com/ and create a new
 # AI Instructions
 
 - **Critical Requirement (Top Priority)**: `walkthrough.md` MUST be written entirely in Japanese. Writing this file in English is strictly prohibited.
+
+## Colab / 外部ランタイム操作ルール
+- **停止処理の簡潔化**:
+  - ランタイム停止・解放時は、`runtime.unassign()` を実行後、Colab の接続ステータスが未接続状態（「再接続」表示）になった時点で即座に完了と判定する。過剰なメニュー探索や出力消去の確認ループを行わない。
+- **ノートブックの Single Source of Truth**:
+  - Colab 画面上でセルコードを修正・更新した場合は、必ずローカルの `glm5_maya_assistant.ipynb` や仕様ドキュメントにも即時反映し、同期ずれを防ぐ。
+- **共通操作ツールの利用**:
+  - Colab との対話や停止操作には ad-hoc なワンライナーを乱用せず、`scripts/colab_client.py` を使用して安定した操作を行う。
+

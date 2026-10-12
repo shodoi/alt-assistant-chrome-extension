@@ -570,6 +570,15 @@
             background-color: color-mix(in oklch, var(--gemini-danger) 94%, transparent);
             color: oklch(0.99 0 none);
         }
+
+        .gemini-alt-status.is-global {
+            position: fixed;
+            inset-block-start: 1.5rem;
+            inset-inline-start: 50%;
+            transform: translateX(-50%);
+            white-space: normal;
+            max-inline-size: min(90vw, 480px);
+        }
     `;
 
     // --- Shadow DOM 管理 ---
@@ -628,12 +637,17 @@
         }
 
         switch (message.action) {
+            case 'ping':
+                // Service Worker からの疎通確認（ハンドシェイク）に即座に応答
+                sendResponse({ status: 'ok', pong: true });
+                return false;
+
             case 'showInstructionDialog':
                 showInstructionDialog((userChoice) => sendResponse(userChoice));
                 return true; // 非同期でsendResponseを呼び出すため
 
             case 'updateModelStatus': {
-                const imageElementForStatus = findImageElement(message.imageUrl);
+                const imageElementForStatus = findImageElement(message.imageUrl) || lastRightClickedElement;
                 if (imageElementForStatus) {
                     const dialog = getGeminiElement('gemini-alt-dialog');
                     if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
@@ -644,7 +658,7 @@
             }
 
             case 'startAltTextGeneration': {
-                const imageElementForLoading = findImageElement(message.imageUrl);
+                const imageElementForLoading = findImageElement(message.imageUrl) || lastRightClickedElement;
                 if (imageElementForLoading) {
                     const dialog = getGeminiElement('gemini-alt-dialog');
                     if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
@@ -659,9 +673,11 @@
                 break;
 
             case 'errorAltTextGeneration': {
-                const imageElementForError = findImageElement(message.imageUrl);
+                const imageElementForError = findImageElement(message.imageUrl) || lastRightClickedElement;
                 if (imageElementForError) {
                     handleError(imageElementForError, message);
+                } else {
+                    showGlobalToast(`エラー: ${message.errorMessage}`, 'error');
                 }
                 break;
             }
@@ -1198,6 +1214,29 @@
                 if (statusDiv.parentNode) statusDiv.remove();
             }, STATUS_TOAST_DURATION_MS);
         }
+    }
+
+    /**
+     * 画像要素が取得できない場合（不正なURLやDOM外のトリガー等）に画面上部へフォールバック表示するトースト
+     * @param {string} message - 表示メッセージ
+     * @param {'error'|'rate-limit'|'loading'} [type='error'] - ステータス種別
+     */
+    function showGlobalToast(message, type = 'error') {
+        const existingStatus = getShadowRoot().querySelector('.gemini-alt-status.is-global');
+        if (existingStatus) existingStatus.remove();
+
+        const statusDiv = document.createElement('div');
+        statusDiv.className = `gemini-alt-status is-${type} is-global`;
+
+        const msgSpan = document.createElement('span');
+        msgSpan.textContent = message;
+        statusDiv.appendChild(msgSpan);
+
+        getShadowRoot().appendChild(statusDiv);
+
+        setTimeout(() => {
+            if (statusDiv.parentNode) statusDiv.remove();
+        }, STATUS_TOAST_DURATION_MS);
     }
 
     /**

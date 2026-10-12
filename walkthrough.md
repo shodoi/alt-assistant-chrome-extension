@@ -72,4 +72,53 @@ node --check background.js content.js options.js
 # 構文エラーなし（終了コード: 0）
 ```
 
-拡張機能の全コンポーネント（バックグラウンド、コンテンツスクリプト、設定画面）がエラーなく安全に動作可能な状態となっています。
+---
+
+## 5. Issue 01: SW–ContentScript間の通信健全化（PINGハンドシェイク & 画像URLバリデーション）の実装
+
+### 課題と目的
+従来の動的スクリプト注入では、右クリック実行ごとに無条件で `chrome.scripting.executeScript` が実行されていたため、同一タブで複数回実行した際にスクリプトの多重注入やメッセージリスナーの重複登録、レースコンディションが発生する懸念がありました。また、画像URLのプロトコル検証が行われていなかったため、`javascript:` や `file:`、`blob:` 等の危険または非想定なプロトコルに対する防御が不十分でした。
+
+### 実施した主な改修
+1. **画像URLバリデーションモジュール (`utils/validation.js`) の新設 (シームA)**
+   - `validateImageUrl(url)` 関数を実装。
+   - `http:`, `https:`, `data:image/*` の安全な画像URLのみを許可。
+   - `javascript:` (XSS・スクリプトインジェクション防止)、`file:` (ローカルファイルアクセス防止)、`blob:`、空文字、無効なURL形式を厳格に拒否。
+2. **PINGハンドシェイク & 動的ロード制御モジュール (`utils/handshake.js`) の新設 (シームB)**
+   - `ensureContentScriptReady(tabId, frameId, options)` を実装。
+   - Service Worker から Content Script に対してまず PING メッセージ（疎通確認）を送信。
+   - すでに Content Script が応答（PONG）した場合は、`chrome.scripting.executeScript` をスキップして二重注入・多重リスナー登録を防止。
+   - 応答がない未ロード時のみ動的注入を実行し、注入完了後に PING リトライを行って通信確立を保証。
+3. **Content Script (`content.js`) のハンドシェイク対応 & エラーフォールバック強化**
+   - メッセージリスナーに `ping` アクションを追加し、即座に `{ status: 'ok', pong: true }` を返却。
+   - `findImageElement` で画像要素が特定できない場合でも、直前右クリック要素 (`lastRightClickedElement`) への表示、または画面上部へのグローバルトースト通知 (`showGlobalToast`) を行うフォールバックを実装。
+4. **Service Worker (`background.js`) での統合作業**
+   - `importScripts('utils/validation.js', 'utils/handshake.js')` を導入。
+   - `startGenerationProcess` の開始直後に URL バリデーションとハンドシェイクを実行し、危険なURLの遮断と確実なダイアログ起動を両立。
+
+### テストおよび検証結果
+Node.js 組み込みテストランナー (`node:test`) を用いた TDD により、全 16 件のテストケースを作成・検証しました。
+
+```bash
+node --test test/*.test.js
+# ▶ ensureContentScriptReady (シームB: PINGハンドシェイク & 動的ロード制御)
+#   ✔ Content Scriptが既に存在する場合、executeScriptを呼ばずに即座に成功すること（二重注入防止）
+#   ✔ Content Scriptが未注入の場合、executeScriptで動的注入し、その後のPINGで疎通確認すること
+#   ✔ frameIdが指定されている場合、target.frameIdsを適切に設定して注入すること
+#   ✔ 保護されたシステムページ等でexecuteScriptが拒否された場合、分かりやすいエラーをスローすること
+#   ✔ 注入後もPINGに応答がない場合、タイムアウト／リトライ超過でエラーをスローすること
+# ▶ validateImageUrl (シームA: 画像URLバリデーション)
+#   ✔ https: URLを許可すること
+#   ✔ http: URLを許可すること
+#   ✔ data:image/* 形式の Data URI を許可すること
+#   ✔ data:image/jpeg や data:image/webp 形式も許可すること
+#   ✔ javascript: プロトコルを拒否すること
+#   ✔ file: プロトコルを拒否すること
+#   ✔ blob: プロトコルを拒否すること
+#   ✔ 画像以外の data: URI (data:text/html など) を拒否すること
+#   ✔ ftp: やその他未知のプロトコルを拒否すること
+#   ✔ 空文字、null、undefined、非文字列を拒否すること
+#   ✔ 不正なフォーマットのURL文字列を拒否すること
+# ℹ tests 16, pass 16, fail 0
+```
+

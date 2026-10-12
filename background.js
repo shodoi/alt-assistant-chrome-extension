@@ -1,5 +1,8 @@
 // background.js
 
+// ユーティリティスクリプトの同期読み込み (Service Worker)
+importScripts('utils/validation.js', 'utils/handshake.js');
+
 // --- 定数定義 (Constants) ---
 /** 使用するGeminiモデルID（高速かつ高性能な最新Flashモデル） */
 const GEMINI_MODEL_ID = 'gemini-3.8-flash';
@@ -22,29 +25,15 @@ const BASE64_CHUNK_SIZE = 8192;
 /**
  * 対象のタブおよびフレームへコンテンツスクリプトをオンデマンドで動的注入（Dynamic Script Injection）する
  * 
- * manifest.json での常時全ページ注入を廃止し、ユーザーが拡張機能のアクションを起こした
- * タイミングでのみスクリプトをロードすることで、ブラウザの消費メモリとバックグラウンド負荷を大幅に削減する。
+ * PINGハンドシェイク（ensureContentScriptReady）により、すでにロード済みの場合は注入をスキップし、
+ * リスナーの重複登録やレースコンディションを防止する。
  *
  * @param {number} tabId - 注入対象のタブID
  * @param {number} [frameId=0] - 注入対象のフレームID
  * @returns {Promise<void>}
  */
 async function ensureContentScriptInjected(tabId, frameId = 0) {
-    const target = { tabId };
-    if (typeof frameId === 'number' && frameId > 0) {
-        target.frameIds = [frameId];
-    }
-
-    try {
-        await chrome.scripting.executeScript({
-            target,
-            files: ['content.js']
-        });
-    } catch (error) {
-        // chrome:// や chrome-extension:// などの保護されたシステムページでは注入が拒否される
-        console.warn(`コンテンツスクリプトの動的注入（Dynamic Script Injection）に失敗しました (tabId: ${tabId}, frameId: ${frameId}):`, error);
-        throw new Error("このページでは拡張機能を実行できません（保護されたシステムページ等）。");
-    }
+    return ensureContentScriptReady(tabId, frameId);
 }
 
 /**
@@ -57,8 +46,20 @@ async function ensureContentScriptInjected(tabId, frameId = 0) {
  */
 async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId, context = {}) {
     try {
-        // コンテンツスクリプトをオンデマンドで動的注入
-        await ensureContentScriptInjected(tabId, frameId);
+        // 1. 画像URLの安全性・プロトコルバリデーション（javascript:, file:, blob: 等の危険/非想定プロトコル遮断）
+        const urlValidation = validateImageUrl(imageUrl);
+        if (!urlValidation.valid) {
+            // エラー表示をWebページUIに届けるため、可能であればContent Scriptの疎通を試みる
+            try {
+                await ensureContentScriptReady(tabId, frameId);
+            } catch {
+                // 保護されたページ等で注入できない場合は無視して例外を投げる
+            }
+            throw new Error(urlValidation.error || "無効な画像URLです。");
+        }
+
+        // 2. コンテンツスクリプトの疎通確認（PINGハンドシェイク & 未ロード時のみオンデマンド動的注入）
+        await ensureContentScriptReady(tabId, frameId);
 
         let userChoice;
         let finalPrompt;
