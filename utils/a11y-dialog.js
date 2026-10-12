@@ -156,7 +156,8 @@ export function attachDialogA11y(dialog, options = {}) {
     } = options;
 
     // 1. WAI-ARIA 属性の設定
-    dialog.setAttribute('role', 'dialog');
+    const role = options.role || dialog.getAttribute('role') || 'dialog';
+    dialog.setAttribute('role', role);
     dialog.setAttribute('aria-modal', 'true');
 
     if (titleElement) {

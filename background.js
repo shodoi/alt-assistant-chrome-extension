@@ -1,7 +1,7 @@
 // background.js
 
 // ユーティリティスクリプトの同期読み込み (Service Worker)
-importScripts('utils/validation.js', 'utils/handshake.js');
+importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js');
 
 // --- 定数定義 (Constants) ---
 /** 使用するGeminiモデルID（高速かつ高性能な最新Flashモデル） */
@@ -107,13 +107,24 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
                     }
                 });
             } else {
-                throw new Error(result.errorMessage || "生成に失敗しました。");
+                const failureError = new Error(result.errorMessage || "生成に失敗しました。");
+                if (result.errorDetails) failureError.classified = result.errorDetails;
+                throw failureError;
             }
         }
     } catch (error) {
         console.error("生成プロセスでエラーが発生しました:", error);
+        const classified = error.classified || (typeof classifyApiError === 'function' ? classifyApiError(error) : null);
         chrome.tabs.sendMessage(tabId, { 
-            action: "errorAltTextGeneration", imageUrl, errorMessage: error.message, targetElementId, frameId, aiProvider: 'Gemini'
+            action: "errorAltTextGeneration", 
+            imageUrl, 
+            errorMessage: classified?.userMessage || error.message, 
+            errorDetails: classified,
+            errorType: classified?.type || 'UNKNOWN',
+            targetElementId, 
+            frameId, 
+            aiProvider: 'Gemini',
+            modelLabel: GEMINI_MODEL_LABEL
         }, { frameId }, (response) => {
             if (chrome.runtime.lastError) {
                 console.warn('エラーメッセージ送信失敗（タブが閉じられた可能性があります）:', chrome.runtime.lastError.message);
@@ -125,13 +136,14 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
 /**
  * 単一モデル（Gemini 3.8 Flash）を用いてAltテキストを生成する
  * 
- * 複数モデルの切り替えや不要なフォールバックループを排除し、単一の明確なAPI呼び出しに集約。
+ * 指数バックオフ＋ジッターによる 429 レート制限の自動再試行を行い、
+ * ユーザー向けにリアルタイムの進捗通知を送信する。
  *
  * @param {string} imageUrl - 対象画像URL
  * @param {string} promptText - 指示プロンプト
  * @param {number} tabId - タブID
  * @param {number} frameId - フレームID
- * @returns {Promise<{ success: boolean, altText?: string, errorMessage?: string }>}
+ * @returns {Promise<{ success: boolean, altText?: string, errorMessage?: string, errorDetails?: object, errorType?: string }>}
  */
 async function generateAltText(imageUrl, promptText, tabId, frameId) {
     try {
@@ -146,7 +158,23 @@ async function generateAltText(imageUrl, promptText, tabId, frameId) {
         }, { frameId }).catch(() => {});
 
         console.log(`Generating alt text with ${GEMINI_MODEL_ID}...`);
-        const altText = await generateAltTextWithGemini(preparedImage, GEMINI_MODEL_ID, promptText);
+        const altText = await generateAltTextWithGemini(
+            preparedImage, 
+            GEMINI_MODEL_ID, 
+            promptText,
+            {
+                onRetry: (err, attempt, delayMs) => {
+                    console.warn(`Gemini API 一時エラー (試行 ${attempt}/3)、${Math.round(delayMs)}ms 後に再試行します:`, err);
+                    chrome.tabs.sendMessage(tabId, {
+                        action: "updateModelStatus",
+                        imageUrl,
+                        statusText: `アクセス集中のため再試行中 (${attempt}/3)...`,
+                        isRetry: true,
+                        attempt
+                    }, { frameId }).catch(() => {});
+                }
+            }
+        );
         
         return {
             success: true,
@@ -154,9 +182,12 @@ async function generateAltText(imageUrl, promptText, tabId, frameId) {
         };
     } catch (error) {
         console.warn(`Altテキスト生成エラー (${GEMINI_MODEL_ID}):`, error);
+        const classified = typeof classifyApiError === 'function' ? classifyApiError(error) : null;
         return {
             success: false,
-            errorMessage: error.message || "生成に失敗しました。"
+            errorMessage: classified?.userMessage || error.message || "生成に失敗しました。",
+            errorDetails: classified,
+            errorType: classified?.type || 'UNKNOWN'
         };
     }
 }
@@ -240,6 +271,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 // content.jsからのメッセージリスナー
 chrome.runtime.onMessage.addListener((message, sender) => {
     switch (message.action) {
+        case "open_options_page":
+            chrome.runtime.openOptionsPage();
+            break;
         case "start_over":
             startGenerationProcess(
                 message.imageUrl, 
@@ -367,15 +401,23 @@ async function prepareOptimizedImage(imageUrl) {
 
 /**
  * Gemini APIを呼び出してAltテキストを生成するコア関数。
+ * 
+ * 指数バックオフ＋ジッター (retryWithBackoff) により、429 (レート制限) や一時的な
+ * ネットワーク障害を最大3回まで自動再試行する。
+ *
  * @param {string|{ base64Image: string, mimeType: string }} imageInput - 対象の画像URLまたは最適化済み画像データ
  * @param {string} model - 使用するモデルID
  * @param {string} promptText - 指示プロンプト
+ * @param {object} [options={}] - 実行オプション
+ * @param {Function} [options.onRetry] - 再試行時の通知コールバック
  * @returns {Promise<string>} 生成されたAltテキスト
  */
-async function generateAltTextWithGemini(imageInput, model, promptText) {
+async function generateAltTextWithGemini(imageInput, model, promptText, options = {}) {
     const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
     if (!geminiApiKey) {
-        throw new Error("APIキーが設定されていません。拡張機能のオプションページで設定してください。");
+        const keyError = new Error("APIキーが設定されていません。拡張機能のオプションページで設定してください。");
+        keyError.status = 401;
+        throw keyError;
     }
 
     let base64Image;
@@ -402,25 +444,48 @@ async function generateAltTextWithGemini(imageInput, model, promptText) {
         }]
     };
 
-    const apiResponse = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': geminiApiKey
-        },
-        body: JSON.stringify(payload)
-    });
+    const executeApiRequest = async () => {
+        let apiResponse;
+        try {
+            apiResponse = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': geminiApiKey
+                },
+                body: JSON.stringify(payload)
+            });
+        } catch (fetchErr) {
+            // 通信途絶やタイムアウト等の一時的ネットワークエラー
+            console.warn('Gemini API fetch エラー:', fetchErr);
+            throw fetchErr;
+        }
 
-    if (!apiResponse.ok) {
-        const errorData = await apiResponse.json().catch(() => ({}));
-        throw new Error(errorData.error?.message || apiResponse.statusText);
+        if (!apiResponse.ok) {
+            const errorData = await apiResponse.json().catch(() => ({}));
+            const rawMessage = errorData.error?.message || apiResponse.statusText || `HTTP ${apiResponse.status}`;
+            const apiError = new Error(rawMessage);
+            apiError.status = apiResponse.status;
+            apiError.details = errorData.error;
+            throw apiError;
+        }
+
+        const data = await apiResponse.json();
+        const altText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (altText) {
+            return altText.trim();
+        }
+        throw new Error("APIからの応答形式が予期しないものでした。");
+    };
+
+    if (typeof retryWithBackoff === 'function') {
+        return await retryWithBackoff(executeApiRequest, {
+            maxRetries: 3,
+            baseDelay: 1000,
+            onRetry: options.onRetry
+        });
     }
 
-    const data = await apiResponse.json();
-    const altText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (altText) {
-        return altText.trim();
-    }
-    throw new Error("APIからの応答形式が予期しないものでした。");
+    return await executeApiRequest();
 }
 

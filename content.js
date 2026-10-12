@@ -789,6 +789,12 @@
                     const dialog = getGeminiElement('gemini-alt-dialog');
                     if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
                         showStatus(imageElementForStatus, message.statusText, 'loading');
+                    } else {
+                        // チャットダイアログ内でもリトライ進捗をリアルタイム表示
+                        const loadingBubbleText = dialog.querySelector('.chat-bubble-loading span');
+                        if (loadingBubbleText && message.statusText) {
+                            loadingBubbleText.textContent = message.statusText;
+                        }
                     }
                 }
                 announceStatus(message.statusText || '画像を解析中…');
@@ -954,7 +960,8 @@
 
         const { titleElement, onClose, initialFocusElement, restoreFocusElement } = options;
 
-        dialog.setAttribute('role', 'dialog');
+        const role = options.role || dialog.getAttribute('role') || 'dialog';
+        dialog.setAttribute('role', role);
         dialog.setAttribute('aria-modal', 'true');
 
         if (titleElement) {
@@ -1479,25 +1486,65 @@
 
     /**
      * 各種APIエラーに応じたダイアログ・ステータス表示の分岐
+     * 構造化エラー情報 (errorDetails) に応じて、ユーザーが次の行動を取れる親切なモーダルを表示する。
      * @param {HTMLImageElement} imageElement
      * @param {object} message
      */
     function handleError(imageElement, message) {
-        const isRateLimit = message.errorMessage.includes('429') || message.errorMessage.includes('rate limit') || message.errorMessage.includes('quota exceeded') || message.errorMessage.includes('レート制限') || message.errorMessage.includes('Resource has been exhausted');
-        const isApiKeyError = message.errorMessage.includes('API key') || message.errorMessage.includes('APIキー') || message.errorMessage.includes('Invalid API key');
+        // 再生成時にチャットダイアログが開いている場合、ローディング表示を除去
+        const chatDialog = getGeminiElement('gemini-alt-dialog');
+        if (chatDialog && chatDialog.dataset.imageSrc === message.imageUrl) {
+            const loadingBubble = chatDialog.querySelector('.chat-bubble-loading');
+            if (loadingBubble) {
+                const wrapper = loadingBubble.closest('.gemini-chat-row');
+                if (wrapper) wrapper.remove();
+                else loadingBubble.remove();
+            }
+        }
+
+        const errorDetails = message.errorDetails;
+        const errorType = message.errorType || errorDetails?.type;
+        const userMsg = errorDetails?.userMessage || message.errorMessage || 'エラーが発生しました。';
         const provider = message.aiProvider || 'AI';
+        const modelLabel = message.modelLabel || '';
+
+        // エラー種別の判定 (構造化type優先、フォールバックとしてメッセージ文字列解析)
+        const isRateLimit = errorType === 'RATE_LIMIT' ||
+            userMsg.includes('429') ||
+            userMsg.includes('rate limit') ||
+            userMsg.includes('quota exceeded') ||
+            userMsg.includes('利用制限') ||
+            userMsg.includes('レート制限') ||
+            userMsg.includes('Resource has been exhausted');
+
+        const isApiKeyError = errorType === 'API_KEY_INVALID' ||
+            userMsg.includes('API key') ||
+            userMsg.includes('APIキー') ||
+            userMsg.includes('Invalid API key') ||
+            userMsg.includes('401') ||
+            userMsg.includes('403');
+
+        const isNetworkError = errorType === 'NETWORK_ERROR' ||
+            userMsg.includes('Failed to fetch') ||
+            userMsg.includes('ネットワーク') ||
+            userMsg.includes('通信');
 
         if (isRateLimit) {
-            showRateLimitDialog(message.modelLabel);
-            showStatus(imageElement, `${provider}のレートリミット到達 (${message.modelLabel || ''})`, 'rate-limit');
-            announceAlert(`${provider}の利用上限（レート制限）に達しました。しばらく待ってから再試行してください。`);
+            showRateLimitDialog(errorDetails || { modelLabel, userMessage: userMsg });
+            showStatus(imageElement, `${provider}の利用制限到達 (${modelLabel})`, 'rate-limit');
+            announceAlert(userMsg || `${provider}の利用制限（レート制限）に達しました。しばらく待ってから再度お試しください。`);
         } else if (isApiKeyError) {
-            showApiKeyErrorDialog(message.modelLabel);
+            showApiKeyErrorDialog(errorDetails || { modelLabel, userMessage: userMsg });
             showStatus(imageElement, `${provider}のAPIキーエラー`, 'error');
-            announceAlert(`${provider}のAPIキーが無効または未設定です。設定画面を確認してください。`);
+            announceAlert(userMsg || `${provider}のAPIキーが無効または未設定です。設定画面を確認してください。`);
+        } else if (isNetworkError) {
+            showNetworkErrorDialog(errorDetails || { userMessage: userMsg });
+            showStatus(imageElement, 'ネットワーク通信エラー', 'error');
+            announceAlert(userMsg || 'サーバーとの通信に失敗しました。インターネット接続を確認して再試行してください。');
         } else {
-            showStatus(imageElement, `エラー: ${message.errorMessage}`, 'error');
-            announceAlert(`Altテキスト生成エラー: ${message.errorMessage}`);
+            showGeneralErrorDialog(errorDetails || { userMessage: userMsg });
+            showStatus(imageElement, `エラー: ${userMsg}`, 'error');
+            announceAlert(`Altテキスト生成エラー: ${userMsg}`);
         }
     }
 
@@ -1586,9 +1633,9 @@
 
     /**
      * レート制限到達時のアラートダイアログ
-     * @param {string} modelLabel
+     * @param {object} [details={}] - エラー詳細情報
      */
-    function showRateLimitDialog(modelLabel) {
+    function showRateLimitDialog(details = {}) {
         const existingDialog = getGeminiElement('gemini-error-dialog');
         if (existingDialog) existingDialog.remove();
 
@@ -1600,13 +1647,13 @@
         const title = document.createElement('h3');
         title.id = 'gemini-rate-limit-title';
         title.className = 'gemini-dialog-title-large';
-        title.textContent = '⚠️ レート制限に達しました';
+        title.textContent = details.title || '⚠️ 利用制限（レートリミット）に達しました';
         dialog.appendChild(title);
 
         const message = document.createElement('p');
         message.id = 'gemini-rate-limit-desc';
         message.className = 'gemini-dialog-description';
-        message.textContent = `Gemini API (${modelLabel || 'モデル'}) の利用制限に達しました。しばらく待ってから再試行してください。`;
+        message.textContent = details.userMessage || `Gemini API (${details.modelLabel || 'モデル'}) の利用制限に達しました。しばらく待ってから再試行してください。`;
         dialog.appendChild(message);
         dialog.setAttribute('aria-describedby', message.id);
 
@@ -1629,6 +1676,7 @@
 
         cleanupA11y = attachDialogAccessibility(dialog, {
             titleElement: title,
+            role: 'alertdialog',
             onClose: () => dialog.remove(),
             initialFocusElement: closeBtn,
             restoreFocusElement: lastRightClickedElement
@@ -1637,9 +1685,10 @@
 
     /**
      * APIキー未設定・無効時のアラートダイアログ
-     * @param {string} modelLabel
+     * ユーザーが迅速に修復できるよう「設定を開く」アクションボタンを提供する。
+     * @param {object} [details={}] - エラー詳細情報
      */
-    function showApiKeyErrorDialog(modelLabel) {
+    function showApiKeyErrorDialog(details = {}) {
         const existingDialog = getGeminiElement('gemini-error-dialog');
         if (existingDialog) existingDialog.remove();
 
@@ -1651,13 +1700,128 @@
         const title = document.createElement('h3');
         title.id = 'gemini-apikey-error-title';
         title.className = 'gemini-dialog-title-large';
-        title.textContent = '🚫 APIキーエラー';
+        title.textContent = details.title || '🚫 APIキーが無効または未設定です';
         dialog.appendChild(title);
 
         const message = document.createElement('p');
         message.id = 'gemini-apikey-error-desc';
         message.className = 'gemini-dialog-description';
-        message.textContent = 'APIキーが無効か、設定されていません。拡張機能のオプションページで正しいAPIキーを設定してください。';
+        message.textContent = details.userMessage || 'APIキーが無効か、設定されていません。拡張機能のオプションページで正しいAPIキーを設定してください。';
+        dialog.appendChild(message);
+        dialog.setAttribute('aria-describedby', message.id);
+
+        const btnContainer = document.createElement('div');
+        btnContainer.className = 'gemini-btn-row';
+
+        let cleanupA11y = null;
+
+        // 設定画面を開くプライマリボタン
+        const optionsBtn = document.createElement('button');
+        optionsBtn.className = 'gemini-btn gemini-btn-primary';
+        optionsBtn.textContent = '設定を開く';
+        optionsBtn.onclick = () => {
+            if (cleanupA11y) cleanupA11y();
+            dialog.remove();
+            chrome.runtime.sendMessage({ action: 'open_options_page' });
+        };
+        btnContainer.appendChild(optionsBtn);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'gemini-btn gemini-btn-cancel';
+        closeBtn.textContent = '閉じる';
+        closeBtn.onclick = () => {
+            if (cleanupA11y) cleanupA11y();
+            dialog.remove();
+        };
+        btnContainer.appendChild(closeBtn);
+
+        dialog.appendChild(btnContainer);
+        getShadowRoot().appendChild(dialog);
+
+        cleanupA11y = attachDialogAccessibility(dialog, {
+            titleElement: title,
+            role: 'alertdialog',
+            onClose: () => dialog.remove(),
+            initialFocusElement: optionsBtn,
+            restoreFocusElement: lastRightClickedElement
+        });
+    }
+
+    /**
+     * ネットワーク切断・タイムアウト時のアラートダイアログ
+     * @param {object} [details={}] - エラー詳細情報
+     */
+    function showNetworkErrorDialog(details = {}) {
+        const existingDialog = getGeminiElement('gemini-error-dialog');
+        if (existingDialog) existingDialog.remove();
+
+        const dialog = document.createElement('div');
+        dialog.id = 'gemini-error-dialog';
+        dialog.className = 'gemini-dialog gemini-dialog-alert is-warning';
+        dialog.setAttribute('role', 'alertdialog');
+
+        const title = document.createElement('h3');
+        title.id = 'gemini-network-error-title';
+        title.className = 'gemini-dialog-title-large';
+        title.textContent = details.title || '📡 ネットワーク通信エラー';
+        dialog.appendChild(title);
+
+        const message = document.createElement('p');
+        message.id = 'gemini-network-error-desc';
+        message.className = 'gemini-dialog-description';
+        message.textContent = details.userMessage || 'サーバーとの通信に失敗しました。インターネット接続を確認して再試行してください。';
+        dialog.appendChild(message);
+        dialog.setAttribute('aria-describedby', message.id);
+
+        const btnContainer = document.createElement('div');
+        btnContainer.className = 'gemini-btn-row';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'gemini-btn gemini-btn-primary';
+        closeBtn.textContent = '閉じる';
+
+        let cleanupA11y = null;
+        closeBtn.onclick = () => {
+            if (cleanupA11y) cleanupA11y();
+            dialog.remove();
+        };
+
+        btnContainer.appendChild(closeBtn);
+        dialog.appendChild(btnContainer);
+        getShadowRoot().appendChild(dialog);
+
+        cleanupA11y = attachDialogAccessibility(dialog, {
+            titleElement: title,
+            role: 'alertdialog',
+            onClose: () => dialog.remove(),
+            initialFocusElement: closeBtn,
+            restoreFocusElement: lastRightClickedElement
+        });
+    }
+
+    /**
+     * 一般エラー発生時の汎用アラートダイアログ
+     * @param {object} [details={}] - エラー詳細情報
+     */
+    function showGeneralErrorDialog(details = {}) {
+        const existingDialog = getGeminiElement('gemini-error-dialog');
+        if (existingDialog) existingDialog.remove();
+
+        const dialog = document.createElement('div');
+        dialog.id = 'gemini-error-dialog';
+        dialog.className = 'gemini-dialog gemini-dialog-alert is-danger';
+        dialog.setAttribute('role', 'alertdialog');
+
+        const title = document.createElement('h3');
+        title.id = 'gemini-general-error-title';
+        title.className = 'gemini-dialog-title-large';
+        title.textContent = details.title || '⚠️ エラーが発生しました';
+        dialog.appendChild(title);
+
+        const message = document.createElement('p');
+        message.id = 'gemini-general-error-desc';
+        message.className = 'gemini-dialog-description';
+        message.textContent = details.userMessage || 'Altテキストの生成中に予期しないエラーが発生しました。';
         dialog.appendChild(message);
         dialog.setAttribute('aria-describedby', message.id);
 
@@ -1680,6 +1844,7 @@
 
         cleanupA11y = attachDialogAccessibility(dialog, {
             titleElement: title,
+            role: 'alertdialog',
             onClose: () => dialog.remove(),
             initialFocusElement: closeBtn,
             restoreFocusElement: lastRightClickedElement
