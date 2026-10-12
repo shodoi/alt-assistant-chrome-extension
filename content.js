@@ -356,6 +356,26 @@
             transform: none;
         }
 
+        .gemini-icon-btn.is-apply {
+            background-color: var(--gemini-primary);
+            color: var(--gemini-primary-fg);
+            border-color: var(--gemini-primary);
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+            .gemini-icon-btn.is-apply:hover:not(:disabled) {
+                background-color: var(--gemini-primary-hover);
+                border-color: var(--gemini-primary-hover);
+            }
+        }
+
+        .gemini-chat-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            flex-shrink: 0;
+        }
+
         /* ==========================================================================
            入力エリア & field-sizing: content (Textarea that grows with its content)
            ========================================================================== */
@@ -571,6 +591,11 @@
             color: oklch(0.99 0 none);
         }
 
+        .gemini-alt-status.is-success {
+            background-color: color-mix(in oklch, var(--gemini-success) 94%, transparent);
+            color: oklch(0.99 0 none);
+        }
+
         .gemini-alt-status.is-global {
             position: fixed;
             inset-block-start: 1.5rem;
@@ -725,6 +750,72 @@
     // --- UI生成・操作関数 ---
 
     /**
+     * 現在フォーカスされている要素を、Shadow DOM を再帰的に辿って取得する
+     * @param {Document|ShadowRoot} [root=document]
+     * @returns {Element|null}
+     */
+    function getDeepActiveElement(root = document) {
+        if (!root) return null;
+        let active = root.activeElement;
+        while (active && active.shadowRoot && active.shadowRoot.activeElement) {
+            active = active.shadowRoot.activeElement;
+        }
+        return active;
+    }
+
+    /**
+     * 指定要素に安全にフォーカスを復帰する
+     * HTMLImageElement やフォーカス属性を持たない要素には tabindex="-1" を補完してフォーカスを当てる
+     * @param {Element|null} element
+     */
+    function restoreFocusSafely(element) {
+        if (!element || typeof element.focus !== 'function') return;
+        try {
+            if (typeof element.hasAttribute === 'function' && !element.hasAttribute('tabindex')) {
+                const tagName = (element.tagName || '').toUpperCase();
+                if (tagName === 'IMG' || tagName === 'DIV' || tagName === 'SPAN' || tagName === 'FIGURE') {
+                    element.setAttribute('tabindex', '-1');
+                }
+            }
+            element.focus();
+        } catch (e) {
+            // 要素がDOMツリーから削除されている場合などは無視
+        }
+    }
+
+    /**
+     * ノードがドキュメントツリーまたは Shadow DOM 内で接続されているか判定する
+     * @param {Node} node
+     * @param {Document} [doc=document]
+     * @returns {boolean}
+     */
+    function isNodeConnected(node, doc = document) {
+        if (!node) return false;
+        if (typeof node.isConnected === 'boolean') {
+            return node.isConnected;
+        }
+        if (typeof node.getRootNode === 'function') {
+            const root = node.getRootNode({ composed: true });
+            if (root && (root === doc || root.nodeType === 9 || root.nodeType === 11)) {
+                if (root.host && doc && typeof doc.contains === 'function') {
+                    return doc.contains(root.host);
+                }
+                return true;
+            }
+        }
+        let current = node;
+        while (current) {
+            if (doc && current === doc) return true;
+            if (current.host) {
+                current = current.host;
+            } else {
+                current = current.parentNode;
+            }
+        }
+        return false;
+    }
+
+    /**
      * ダイアログ要素に WAI-ARIA 属性、フォーカストラップ (Focus Trap)、
      * Escapeキー終了、フォーカス復帰 (Focus Restoration) を付与する
      * @param {HTMLElement} dialog - 対象のダイアログ要素
@@ -736,6 +827,13 @@
      * @returns {Function} cleanup - イベントリスナーを破棄するクリーンアップ関数
      */
     function attachDialogAccessibility(dialog, options = {}) {
+        if (!dialog) return () => {};
+
+        // 外部モジュール window.AltAssistantA11y がロード済みの場合は委譲
+        if (typeof window !== 'undefined' && window.AltAssistantA11y && typeof window.AltAssistantA11y.attachDialogA11y === 'function') {
+            return window.AltAssistantA11y.attachDialogA11y(dialog, options);
+        }
+
         const { titleElement, onClose, initialFocusElement, restoreFocusElement } = options;
 
         dialog.setAttribute('role', 'dialog');
@@ -749,24 +847,18 @@
         }
 
         // フォーカス復帰用の要素を記録
-        const elementToRestore = restoreFocusElement || document.activeElement || lastRightClickedElement;
+        const elementToRestore = restoreFocusElement || getDeepActiveElement(document) || lastRightClickedElement;
         let isCleanedUp = false;
 
         const cleanup = () => {
             if (isCleanedUp) return;
             isCleanedUp = true;
             document.removeEventListener('keydown', handleKeyDown, true);
-            if (elementToRestore && typeof elementToRestore.focus === 'function') {
-                try {
-                    elementToRestore.focus();
-                } catch (e) {
-                    // 要素がすでにDOMツリーから削除されている場合などは無視
-                }
-            }
+            restoreFocusSafely(elementToRestore);
         };
 
         const handleKeyDown = (e) => {
-            if (!document.contains(dialog)) {
+            if (!isNodeConnected(dialog, document)) {
                 cleanup();
                 return;
             }
@@ -778,7 +870,7 @@
                 cleanup();
                 if (typeof onClose === 'function') {
                     onClose();
-                } else {
+                } else if (typeof dialog.remove === 'function') {
                     dialog.remove();
                 }
                 return;
@@ -786,9 +878,26 @@
 
             // Tab キーのフォーカストラップ (Focus Trap)
             if (e.key === 'Tab') {
-                const focusableElements = Array.from(dialog.querySelectorAll(
-                    'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
-                )).filter(el => el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0);
+                const selector = [
+                    'button:not([disabled])',
+                    'textarea:not([disabled])',
+                    'input:not([disabled])',
+                    'select:not([disabled])',
+                    'a[href]',
+                    '[tabindex]:not([tabindex="-1"])'
+                ].join(', ');
+
+                const focusableElements = Array.from(dialog.querySelectorAll(selector)).filter((el) => {
+                    if (el.hasAttribute('disabled')) return false;
+                    if (el.getAttribute('aria-hidden') === 'true') return false;
+                    if (el.style && (el.style.display === 'none' || el.style.visibility === 'hidden')) return false;
+                    if (typeof el.offsetWidth === 'number' && typeof el.offsetHeight === 'number' && el.offsetParent !== undefined) {
+                        if (el.offsetWidth === 0 && el.offsetHeight === 0 && el.offsetParent === null) {
+                            return false;
+                        }
+                    }
+                    return true;
+                });
 
                 if (focusableElements.length === 0) {
                     e.preventDefault();
@@ -797,14 +906,15 @@
 
                 const firstElement = focusableElements[0];
                 const lastElement = focusableElements[focusableElements.length - 1];
+                const currentActive = getDeepActiveElement(document);
 
                 if (e.shiftKey) {
-                    if (document.activeElement === firstElement || !dialog.contains(document.activeElement)) {
+                    if (currentActive === firstElement || !dialog.contains(currentActive)) {
                         e.preventDefault();
                         lastElement.focus();
                     }
                 } else {
-                    if (document.activeElement === lastElement || !dialog.contains(document.activeElement)) {
+                    if (currentActive === lastElement || !dialog.contains(currentActive)) {
                         e.preventDefault();
                         firstElement.focus();
                     }
@@ -816,12 +926,12 @@
 
         // 初期フォーカス設定
         setTimeout(() => {
-            if (!document.contains(dialog)) return;
+            if (!isNodeConnected(dialog, document)) return;
             if (initialFocusElement && typeof initialFocusElement.focus === 'function') {
                 initialFocusElement.focus();
             } else {
                 const firstFocusable = dialog.querySelector(
-                    'textarea:not([disabled]), input:not([disabled]), button:not([disabled])'
+                    'textarea:not([disabled]), input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
                 );
                 if (firstFocusable) firstFocusable.focus();
             }
@@ -829,6 +939,7 @@
 
         return cleanup;
     }
+
 
     /**
      * ユーザー指示入力ダイアログを表示
@@ -849,7 +960,7 @@
 
         const description = document.createElement('p');
         description.className = 'gemini-dialog-description';
-        description.textContent = '画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。';
+        description.textContent = '画像に対する指示を入力してください。AIが最適なモデルを使用してAltテキストを生成します。(Cmd/Ctrl + Enterで送信)';
 
         const textArea = document.createElement('textarea');
         textArea.id = 'gemini-prompt-textarea';
@@ -857,6 +968,7 @@
         textArea.value = 'この画像の代替テキストを簡潔に日本語で生成してください。';
         textArea.setAttribute('autocomplete', 'off');
         textArea.setAttribute('spellcheck', 'false');
+        textArea.setAttribute('aria-label', 'AIへの指示プロンプト入力欄');
 
         const btnContainer = document.createElement('div');
         btnContainer.className = 'gemini-btn-row';
@@ -881,14 +993,31 @@
 
         getShadowRoot().appendChild(dialog);
 
-        textArea.focus();
-        textArea.select();
-
         let cleanupA11y = null;
         const closeDialog = () => {
             if (cleanupA11y) cleanupA11y();
             dialog.remove();
         };
+
+        const performSubmit = () => {
+            const promptVal = textArea.value.trim();
+            if (!promptVal) return;
+            onSubmit({
+                prompt: promptVal,
+                aiProvider: 'Gemini'
+            });
+            closeDialog();
+        };
+
+        textArea.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                performSubmit();
+            }
+        });
+
+        cancelButton.onclick = () => { onSubmit(null); closeDialog(); };
+        submitButton.onclick = performSubmit;
 
         cleanupA11y = attachDialogAccessibility(dialog, {
             titleElement: titleElement,
@@ -900,17 +1029,17 @@
             restoreFocusElement: lastRightClickedElement
         });
 
-        cancelButton.onclick = () => { onSubmit(null); closeDialog(); };
-
-        submitButton.onclick = () => {
-            onSubmit({
-                prompt: textArea.value,
-                aiProvider: 'Gemini'
-            });
-            closeDialog();
-        };
+        textArea.focus();
+        textArea.select();
     }
 
+    /**
+     * Altテキスト生成結果ダイアログ（対話チャット）を表示
+     * @param {string} initialAltText - 初回生成されたAltテキスト
+     * @param {HTMLImageElement} imageElement - 対象の画像要素
+     * @param {string} modelLabel - 使用モデルの表示名
+     * @param {string} targetElementId - 対象画像要素のID
+     */
     /**
      * Altテキスト生成結果ダイアログ（対話チャット）を表示
      * @param {string} initialAltText - 初回生成されたAltテキスト
@@ -944,10 +1073,12 @@
         closeButton.textContent = '×';
 
         let cleanupA11y = null;
-        closeButton.onclick = () => {
+        const closeDialog = () => {
             if (cleanupA11y) cleanupA11y();
             dialog.remove();
         };
+
+        closeButton.onclick = closeDialog;
         header.appendChild(closeButton);
 
         // チャット履歴表示エリア
@@ -963,14 +1094,44 @@
         instructionInput.id = 'gemini-instruction-input';
         instructionInput.className = 'gemini-input-field';
         instructionInput.type = 'text';
-        instructionInput.placeholder = '追加の指示や修正を入力…';
+        instructionInput.placeholder = '追加の指示や修正を入力… (Cmd/Ctrl + EnterでAlt適用)';
         instructionInput.setAttribute('autocomplete', 'off');
+        instructionInput.setAttribute('aria-label', '追加の指示や修正の入力欄');
 
         // 送信ボタン (アイコン)
         const sendButton = document.createElement('button');
         sendButton.className = 'gemini-icon-btn';
         sendButton.setAttribute('aria-label', '指示を送信');
         sendButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/></svg>`;
+
+        // 画像への Alt テキスト適用関数
+        const applyAltTextToImage = (textToApply) => {
+            const cleanText = typeof textToApply === 'string' ? textToApply.trim() : '';
+            if (!cleanText) return;
+
+            if (imageElement) {
+                imageElement.setAttribute('alt', cleanText);
+                imageElement.alt = cleanText;
+                showStatus(imageElement, 'Altテキストを画像に適用しました ✓', 'success');
+            }
+
+            closeDialog();
+        };
+
+        // ダイアログ要素にコールバックを保持させて追記時にも利用可能にする
+        dialog._onApplyAlt = applyAltTextToImage;
+
+        // キーボードショートカット: Cmd/Ctrl + Enter で最新の AI 生成 Alt テキストを即時適用
+        dialog.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                const aiTextAreas = dialog.querySelectorAll('.chat-bubble-ai textarea');
+                if (aiTextAreas.length > 0) {
+                    const latestText = aiTextAreas[aiTextAreas.length - 1].value;
+                    applyAltTextToImage(latestText);
+                }
+            }
+        });
 
         const performSend = () => {
             const instruction = instructionInput.value.trim();
@@ -988,8 +1149,8 @@
                 return '';
             }).join('\n');
 
-            addMessageToChat(instruction, 'user');
-            addMessageToChat('生成中…', 'loading');
+            addMessageToChat(instruction, 'user', applyAltTextToImage);
+            addMessageToChat('生成中…', 'loading', applyAltTextToImage);
             toggleDialogInputs(dialog, false);
 
             chrome.runtime.sendMessage({
@@ -1005,7 +1166,7 @@
         sendButton.onclick = performSend;
 
         instructionInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.isComposing) {
+            if (e.key === 'Enter' && !e.isComposing && !e.ctrlKey && !e.metaKey) {
                 e.preventDefault();
                 performSend();
             }
@@ -1019,14 +1180,16 @@
         dialog.appendChild(inputArea);
         getShadowRoot().appendChild(dialog);
 
+        addMessageToChat(initialAltText, 'ai', applyAltTextToImage);
+
+        // 初期フォーカスは AI メッセージの Alt適用ボタン（または入力欄）
+        const firstApplyBtn = dialog.querySelector('.gemini-icon-btn.is-apply');
         cleanupA11y = attachDialogAccessibility(dialog, {
             titleElement: title,
             onClose: () => dialog.remove(),
-            initialFocusElement: instructionInput,
+            initialFocusElement: firstApplyBtn || instructionInput,
             restoreFocusElement: imageElement
         });
-
-        addMessageToChat(initialAltText, 'ai');
     }
 
     /**
@@ -1034,8 +1197,9 @@
      * good-css の field-sizing: content により、AI出力のtextareaが自動で自然にフィットする
      * @param {string} text - メッセージ内容
      * @param {'ai'|'user'|'loading'} sender - 送信者種別
+     * @param {Function} [onApplyAlt] - Altテキストを画像に適用するコールバック
      */
-    function addMessageToChat(text, sender) {
+    function addMessageToChat(text, sender, onApplyAlt) {
         const chatHistory = getGeminiElement('gemini-chat-history');
         if (!chatHistory) return;
 
@@ -1050,12 +1214,35 @@
             textArea.className = 'gemini-ai-text';
             textArea.setAttribute('readonly', 'readonly');
             textArea.value = text;
+            textArea.setAttribute('aria-label', 'AIが生成したAltテキスト');
             bubble.appendChild(textArea);
+
+            // アクションボタンコンテナ
+            const actionsContainer = document.createElement('div');
+            actionsContainer.className = 'gemini-chat-actions';
+
+            // 画像に適用ボタン
+            const applyButton = document.createElement('button');
+            applyButton.className = 'gemini-icon-btn is-apply';
+            applyButton.setAttribute('aria-label', 'このAltテキストを画像に適用');
+            applyButton.title = '画像にAltテキストを適用 (Enter または Cmd/Ctrl + Enter)';
+            applyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/></svg>`;
+
+            const dialog = getGeminiElement('gemini-alt-dialog');
+            const applyHandler = onApplyAlt || (dialog && dialog._onApplyAlt);
+
+            applyButton.onclick = (e) => {
+                e.stopPropagation();
+                if (typeof applyHandler === 'function') {
+                    applyHandler(textArea.value);
+                }
+            };
 
             // コピーボタン
             const copyButton = document.createElement('button');
             copyButton.className = 'gemini-icon-btn';
-            copyButton.setAttribute('aria-label', 'テキストをコピー');
+            copyButton.setAttribute('aria-label', 'テキストをクリップボードにコピー');
+            copyButton.title = 'クリップボードにコピー';
             copyButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 1H4C2.9 1 2 1.9 2 3V17H4V3H16V1ZM19 5H8C6.9 5 6 5.9 6 7V21C6 22.1 6.9 23 8 23H19C20.1 23 21 22.1 21 21V7C21 5.9 20.1 5 19 5ZM19 21H8V7H19V21Z" fill="currentColor"/></svg>`;
 
             copyButton.onclick = (e) => {
@@ -1076,8 +1263,11 @@
                 }
             };
 
+            actionsContainer.appendChild(applyButton);
+            actionsContainer.appendChild(copyButton);
+
             wrapper.appendChild(bubble);
-            wrapper.appendChild(copyButton);
+            wrapper.appendChild(actionsContainer);
 
         } else if (sender === 'loading') {
             const spinner = document.createElement('span');

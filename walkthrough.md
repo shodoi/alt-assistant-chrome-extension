@@ -122,3 +122,38 @@ node --test test/*.test.js
 # ℹ tests 16, pass 16, fail 0
 ```
 
+---
+
+## 6. Issue 02: ダイアログ・モーダルのフォーカストラップとキーボード操作性（A11y）向上の実装
+
+### 課題と目的
+従来のモーダルUIでは、Shadow DOM 内部のフォーカス判定において `document.activeElement` が Shadow Host を指してしまう問題があり、Tabキーによるフォーカストラップが誤判定されてモーダル外へフォーカスが漏れる課題がありました。また、モーダルを閉じた際に画像要素（`img`）は標準でフォーカスを受け取らないためフォーカス復帰が失敗するケースや、キーボード操作のみでAI生成Altテキストを画像に適用する手段が欠如していました。
+
+### 実施した主な改修
+1. **フォーカストラップ & A11y 制御モジュール (`utils/a11y-dialog.js`) の新設 (シームA)**
+   - `getDeepActiveElement(root)`: Shadow DOM を再帰的に辿り、真のアクティブ要素を正確に検出。
+   - `isNodeConnected(node, doc)`: Shadow DOM 内部の要素であってもDOMツリー接続状態を正しく判定し、誤った早期クリーンアップを防止。
+   - `getFocusableElements(container)`: `button`, `textarea`, `input`, `select`, `a[href]`, `[tabindex]` のうち有効かつ可視な要素を正確に抽出。
+   - `restoreFocus(element)`: 通常フォーカス不可能な `img` 要素等に対し `tabindex="-1"` を補完して安全にフォーカスを復帰。
+   - `attachDialogA11y(dialog, options)`: WAI-ARIA属性（`role="dialog"`, `aria-modal="true"`, `aria-labelledby`）、Tab/Shift+Tabの循環トラップ、IME変換中（`isComposing`）を除外したEscapeキー終了を統合。
+2. **指示入力ダイアログ (`showInstructionDialog`) のキーボード操作性強化 (シームB)**
+   - テキストエリアでの `Cmd + Enter` / `Ctrl + Enter` 送信ショートカットを追加。
+   - ダイアログ起動時にテキストエリアへの自動フォーカスおよびテキスト選択（`.select()`）を実行。
+3. **Altテキスト生成結果ダイアログ (`showAltTextDialog`) のAlt適用フロー実装 (シームB)**
+   - AIメッセージバブル横に「画像にAlt適用」ボタン（`.gemini-icon-btn.is-apply`）を新設。
+   - 適用ボタン押下または `Enter`、およびダイアログ上での `Cmd + Enter` / `Ctrl + Enter` により、ワンキーで画像要素の `alt` 属性を更新し、トースト通知を表示してダイアログをクローズ。
+   - クローズ後はトリガー元となった画像要素へ自動的にフォーカスが復帰し、キーボードのみ（Tab、Enter、Escape）で全フローが完結。
+4. **デザインシステム・CSSスタイル拡充 (`GEMINI_SHADOW_STYLES`)**
+   - `.gemini-icon-btn.is-apply`: プライマリカラーの適用ボタン。
+   - `.gemini-chat-actions`: アクションボタン（適用・コピー）のレイアウト配置。
+   - `.gemini-alt-status.is-success`: 適用完了時の成功トーストスタイル。
+
+### テストおよび検証結果
+Node.js 組み込みテストランナー (`node:test`) により、全 37 件のテストケースが正常に通過することを確認しました。
+
+```bash
+node --test test/*.test.js
+# ℹ tests 37, suites 4, pass 37, fail 0
+```
+
+
