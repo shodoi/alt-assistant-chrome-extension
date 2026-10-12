@@ -23,7 +23,8 @@ To acquire a Gemini API key, visit https://aistudio.google.com/ and create a new
 
 # Development Conventions
 
-*   The extension uses the `chrome.storage.sync` API to store the user's API key.
+*   The extension uses the `chrome.storage.local` API to store the user's API key securely on the device without transmitting it to external servers.
+*   The extension adheres to the Principle of Least Privilege: broad `<all_urls>` host permissions are removed in favor of `activeTab` and Google Gemini API endpoint permissions (`https://generativelanguage.googleapis.com/*`).
 *   Communication between the background and content scripts is done using `chrome.runtime.sendMessage` and `chrome.runtime.onMessage`.
 *   The user interface is created dynamically using JavaScript and injected into the web page.
 *   The Gemini API is called from the background script to avoid exposing the API key in the content script.

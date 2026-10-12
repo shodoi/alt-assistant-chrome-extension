@@ -294,3 +294,39 @@ node --test test/*.test.js
 # ℹ tests 107, suites 12, pass 107, fail 0
 ```
 
+---
+
+## 10. Issue 06: manifest.json のホスト権限最小化とオプション画面の説明整備の実装
+
+### 課題と目的
+Chrome Web Store の拡張機能審査基準では、「最小権限の原則（Principle of Least Privilege）」の遵守が厳格に求められています。
+従来の構成では `manifest.json` の `host_permissions` に `<all_urls>`（すべてのWebサイトへの常時アクセス権限）が設定されていたため、以下の重大な課題がありました：
+1. **ユーザーへの過剰な警告表示**: インストール時や権限確認時に「閲覧履歴やWebサイト上の全データの読み取り・変更」という強い警告ダイアログが表示され、利用者に心理的不安を与える。
+2. **ストア審査でのリジェクトリスク**: Google の審査基準において、必要性が十分に証明されない広範なホスト権限の要求はリジェクトや追加理由書の提出対象となる。
+3. **セキュリティとプライバシーの安心感不足**: オプション画面で入力する Gemini API キーが外部サーバーではなく端末内ローカルストレージ（`chrome.storage.local`）に安全に保存されていることや、Google API との直接通信であることの説明が不足していた。
+
+本改修では、`<all_urls>` の常時ホスト権限を完全に撤廃し、Google Gemini API エンドポイント（`https://generativelanguage.googleapis.com/*`）と `activeTab` 権限を主軸とした必要最小限の権限構成へ移行しました。また、オプション画面にセキュリティとプライバシーに関する安心感を与える分かりやすい説明カードを新設しました。
+
+### 実施した主な改修
+1. **`manifest.json` のホスト権限最小化 (シームA)**
+   - `host_permissions` から `<all_urls>` を削除し、Gemini API エンドポイント `https://generativelanguage.googleapis.com/*` のみに限定。
+   - 一般のWebサイトに対する操作権限は、ユーザーがコンテキストメニューから画像を右クリックして実行した際に対象タブにのみ一時付与される `activeTab` 権限を主軸に構成。
+   - 不要な高特権（`tabs`, `webRequest` 等）は一切要求せず、最小権限を徹底。
+   - Service Worker からの直接 fetch が CORS により遮断される外部画像については、Issue 05 で実装された Content Script 側の DOM/Canvas 抽出フォールバックチェーンが `activeTab` コンテキスト内で協調動作するため、`<all_urls>` なしでも画像救出・Alt 生成が正常に動作することを保証。
+2. **オプション画面 (`options.html`) のセキュリティ＆プライバシー説明整備 (シームB)**
+   - `good-css` のデザインシステム（OKLCH、コンセントリック角丸、セマンティックHTML構造）に基づき、「セキュリティとプライバシー」情報カードセクションを新設。
+   - **端末内ローカルストレージ保存**: API キーが外部サーバーやクラウドには一切送信されず、お使いの端末内ローカルストレージ（`chrome.storage.local`）にのみ隔離保存されることを明記。
+   - **直接暗号化通信**: ブラウザから Google の公式 API エンドポイント（`https://generativelanguage.googleapis.com/*`）へ HTTPS で直接暗号化通信を行う旨を明示。
+   - **最小権限設計**: 全サイト閲覧権限（`<all_urls>`）を要求せず、右クリックした対象タブでのみ一時動作する `activeTab` 権限を採用している安心設計を分かりやすく案内。
+3. **開発規約およびドキュメントの整合性更新**
+   - `GEMINI.md` のストレージ記述を `chrome.storage.local` に統一し、最小権限の原則（Least Privilege Principle）に関する規約を追加。
+
+### テストおよび検証結果
+Node.js 組み込みテストランナー (`node:test`) により、シームA（Manifest権限検証テスト5件）およびシームB（オプション画面セキュリティ説明検証テスト5件）を追加し、既存テストを含む全 117 件のテストケースがすべて正常に通過することを確認しました。
+
+```bash
+node --test test/*.test.js
+# ℹ tests 117, suites 14, pass 117, fail 0
+```
+
+

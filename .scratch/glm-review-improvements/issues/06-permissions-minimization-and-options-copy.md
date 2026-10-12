@@ -5,8 +5,8 @@ Chrome Web Store の審査基準（最小権限の原則）に適合し、ユー
 
 **Blocked by:** 01: SW–ContentScript間の通信健全化（PINGハンドシェイク & 画像URLバリデーション）, 05: SVGラスタライズおよびCORS制限画像のフォールバック
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] `manifest.json` から `<all_urls>` の常時ホスト権限が削除され、必要なAPIエンドポイント（`https://generativelanguage.googleapis.com/*`）と `activeTab` を主軸とした権限構成になっていること
-- [ ] 権限を縮小した後も、通常のWebサイト上で右クリックからのAlt生成フローが正常に動作すること
-- [ ] オプション画面（options.html）に、APIキーの保存先（端末内ローカル）とセキュリティに関する安心感を与える分かりやすい説明が表示されていること
+- [x] `manifest.json` から `<all_urls>` の常時ホスト権限が削除され、必要なAPIエンドポイント（`https://generativelanguage.googleapis.com/*`）と `activeTab` を主軸とした権限構成になっていること
+- [x] 権限を縮小した後も、通常のWebサイト上で右クリックからのAlt生成フローが正常に動作すること
+- [x] オプション画面（options.html）に、APIキーの保存先（端末内ローカル）とセキュリティに関する安心感を与える分かりやすい説明が表示されていること

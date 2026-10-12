@@ -302,6 +302,98 @@
             white-space: nowrap;
             flex-shrink: 0;
         }
+
+        /* ==========================================================================
+           セキュリティ＆プライバシー情報カード (Security & Privacy Card)
+           ========================================================================== */
+        .security-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-element);
+            background-color: var(--surface-raised);
+            padding-block: 1rem;
+            padding-inline: 1.125rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.875rem;
+        }
+
+        .security-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+
+        .security-badge {
+            background-color: var(--success-bg);
+            color: var(--success-fg);
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding-block: 0.25rem;
+            padding-inline: 0.625rem;
+            border-radius: 9999px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            border: 1px solid color-mix(in oklch, var(--success) 25%, transparent);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .security-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .security-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.625rem;
+            font-size: 0.8125rem;
+        }
+
+        .security-item-icon {
+            flex-shrink: 0;
+            inline-size: 1.25rem;
+            block-size: 1.25rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--success);
+            font-weight: bold;
+            margin-block-start: 0.125rem;
+        }
+
+        .security-item-content {
+            display: flex;
+            flex-direction: column;
+            gap: 0.125rem;
+        }
+
+        .security-item-title {
+            font-weight: 600;
+            color: var(--fg);
+            font-size: 0.8125rem;
+        }
+
+        .security-item-desc {
+            color: var(--fg-muted);
+            margin: 0;
+            line-height: 1.5;
+        }
+
+        code.inline-code {
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 0.75rem;
+            background-color: color-mix(in oklch, var(--fg) 8%, transparent);
+            padding-block: 0.1em;
+            padding-inline: 0.35em;
+            border-radius: 0.25rem;
+        }
     </style>
 </head>
 <body>
@@ -309,7 +401,7 @@
         <header class="header-section">
             <h1>Gemini Alt Text Generator 設定</h1>
             <p>この拡張機能を使用するには、<a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer">Google AI Studio</a>または<a href="https://cloud.google.com/vertex-ai" target="_blank" rel="noopener noreferrer">Google Cloud Vertex AI</a>で取得したGemini APIキーが必要です。</p>
-            <p>APIキーはあなたのブラウザに安全に保存され、画像のAltテキスト生成にのみ使用されます。</p>
+            <p>APIキーはお使いの端末内（<code>chrome.storage.local</code>）にのみ安全に保存され、画像のAltテキスト生成にのみ使用されます。</p>
         </header>
 
         <section class="form-group">
@@ -330,6 +422,44 @@
                     <p class="model-info-desc">高速かつ高精度な最新世代モデルで Alt テキストを自動生成します。</p>
                 </div>
                 <span class="model-badge">標準モデル</span>
+            </div>
+        </section>
+
+        <hr class="divider">
+
+        <section aria-labelledby="security-heading">
+            <div class="security-header">
+                <h2 id="security-heading" style="margin-block-end: 0;">セキュリティとプライバシー</h2>
+                <span class="security-badge">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    安心・安全設計
+                </span>
+            </div>
+            <p style="margin-block-start: 0.5rem; margin-block-end: 0.875rem;">本拡張機能はユーザーのプライバシー保護と最小権限の原則（Least Privilege）に準拠して設計されています。</p>
+            <div class="security-card">
+                <ul class="security-list">
+                    <li class="security-item">
+                        <span class="security-item-icon" aria-hidden="true">✓</span>
+                        <div class="security-item-content">
+                            <span class="security-item-title">端末内ローカルストレージ（chrome.storage.local）への安全な保存</span>
+                            <p class="security-item-desc">入力された API キーはお使いの端末内ローカルストレージ（<code class="inline-code">chrome.storage.local</code>）にのみ暗号化・隔離保存されます。開発者や第三者の外部サーバーに送信・保存されることは一切ありません。</p>
+                        </div>
+                    </li>
+                    <li class="security-item">
+                        <span class="security-item-icon" aria-hidden="true">✓</span>
+                        <div class="security-item-content">
+                            <span class="security-item-title">Google Gemini API エンドポイントへの直接暗号化通信</span>
+                            <p class="security-item-desc">Alt テキスト生成時は、ブラウザから Google の公式 API エンドポイント（<code class="inline-code">https://generativelanguage.googleapis.com/*</code>）へ HTTPS で直接暗号化通信を行います。プロキシや外部サーバーは介在しません。</p>
+                        </div>
+                    </li>
+                    <li class="security-item">
+                        <span class="security-item-icon" aria-hidden="true">✓</span>
+                        <div class="security-item-content">
+                            <span class="security-item-title">最小権限の原則（不要な全サイト閲覧権限の不使用）</span>
+                            <p class="security-item-desc">Web 閲覧履歴や全ページのデータを常時読み取る過剰な権限（<code class="inline-code">&lt;all_urls&gt;</code>）は一切要求しません。ユーザーが画像を右クリックした対象タブでのみ一時的に動作する <code class="inline-code">activeTab</code> 権限を主軸としています。</p>
+                        </div>
+                    </li>
+                </ul>
             </div>
         </section>
     </main>
