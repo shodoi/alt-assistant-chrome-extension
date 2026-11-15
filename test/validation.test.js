@@ -45,10 +45,10 @@ describe('validateImageUrl (シームA: 画像URLバリデーション)', () => 
             assert.match(result.error, /file:/i);
         });
 
-        it('blob: プロトコルを拒否すること', () => {
+        it('blob: プロトコルを受け入れること（DOM/Canvasフォールバックで救出可能なため）', () => {
             const result = validateImageUrl('blob:https://example.com/4a5b7d90-3b98-466d-9721-a48a47eb3d3e');
-            assert.equal(result.valid, false);
-            assert.match(result.error, /blob:/i);
+            assert.equal(result.valid, true);
+            assert.equal(result.protocol, 'blob:');
         });
 
         it('画像以外の data: URI (data:text/html など) を拒否すること', () => {

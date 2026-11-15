@@ -2,7 +2,9 @@
  * validation.js - 画像URLの安全性およびプロトコルバリデーションユーティリティ
  *
  * 悪意あるプロトコル（javascript:等）によるスクリプト実行や、
- * 非想定なプロトコル（file:, blob:等）による予期せぬエラーを防止する。
+ * 非想定なプロトコル（file:等）による予期せぬエラーを防止する。
+ * blob: は Service Worker から直接 fetch できないため Content Script 側の
+ * DOM/Canvas 抽出フォールバックで処理される（許可プロトコル）。
  */
 
 /**
@@ -59,10 +61,10 @@ function validateImageUrl(url) {
         }
 
         if (protocol === 'blob:') {
-            return { 
-                valid: false, 
-                error: 'blob: プロトコルの画像URLは現在サポートされていません。' 
-            };
+            // blob: URL は Service Worker からは fetch 不可だが、ページ同一オリジンのため
+            // Content Script 側の DOM/Canvas 抽出フォールバック（image-fallback.js 経由）で
+            // ピクセルを救出できる。X(Twitter) 等への画像貼り付けで生成されるため許可する。
+            return { valid: true, protocol };
         }
 
         return { 

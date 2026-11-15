@@ -46,7 +46,7 @@ async function ensureContentScriptInjected(tabId, frameId = 0) {
  */
 async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId, context = {}) {
     try {
-        // 1. 画像URLの安全性・プロトコルバリデーション（javascript:, file:, blob: 等の危険/非想定プロトコル遮断）
+        // 1. 画像URLの安全性・プロトコルバリデーション（javascript:, file: 等の危険/非想定プロトコル遮断。blob: はDOM抽出フォールバックで処理）
         const urlValidation = validateImageUrl(imageUrl);
         if (!urlValidation.valid) {
             // エラー表示をWebページUIに届けるため、可能であればContent Scriptの疎通を試みる
