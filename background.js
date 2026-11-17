@@ -4,11 +4,11 @@
 importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js', 'utils/image-extractor.js', 'utils/image-fallback.js', 'utils/command-handler.js');
 
 // --- 定数定義 (Constants) ---
-/** 使用するGeminiモデルID（高速かつ高性能な最新Flashモデル） */
-const GEMINI_MODEL_ID = 'gemini-3.8-flash';
+/** 使用するGeminiモデルID（高速かつ高性能な最新モデル） */
+const GEMINI_MODEL_ID = 'gemini-4-hydrogen';
 
 /** UI表示用のモデルラベル */
-const GEMINI_MODEL_LABEL = '3.8 Flash';
+const GEMINI_MODEL_LABEL = 'Gemini 4 Hydrogen';
 
 /** Gemini API送信用の画像長辺の最大ピクセル数（認識精度と通信速度・トークン効率のトレードオフ最適値） */
 const MAX_IMAGE_DIMENSION = 1536;
@@ -134,7 +134,7 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
 }
 
 /**
- * 単一モデル（Gemini 3.8 Flash）を用いてAltテキストを生成する
+ * 単一モデル（Gemini 4 Hydrogen）を用いてAltテキストを生成する
  * 
  * 指数バックオフ＋ジッターによる 429 レート制限の自動再試行を行い、
  * ユーザー向けにリアルタイムの進捗通知を送信する。
@@ -151,11 +151,11 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
         // 画像を一度だけ取得・最適化（SVGラスタライズ & CORSフォールバック対応）
         const preparedImage = await prepareOptimizedImage(imageUrl, tabId, frameId, targetElementId);
 
-        // UIに「3.8 Flash で生成中...」と通知
+        // UIに「Gemini 4 Hydrogen で生成中...」と通知
         chrome.tabs.sendMessage(tabId, { 
             action: "updateModelStatus", 
             imageUrl, 
-            statusText: `Gemini ${GEMINI_MODEL_LABEL} で生成中...` 
+            statusText: `${GEMINI_MODEL_LABEL} で生成中...` 
         }, { frameId }).catch(() => {});
 
         console.log(`Generating alt text with ${GEMINI_MODEL_ID}...`);

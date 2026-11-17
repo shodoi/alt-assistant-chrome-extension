@@ -12,22 +12,21 @@ describe('シームA: manifest.json の権限最小化 (Least Privilege Principl
         assert.equal(manifest.manifest_version, 3);
     });
 
-    it('host_permissions に広範なワイルドカード (<all_urls> や *://*/*) を含まず、最小権限であること', () => {
-        const hostPermissions = manifest.host_permissions || [];
-        assert.ok(!hostPermissions.includes('<all_urls>'), 'ホスト権限に <all_urls> が含まれていてはなりません');
-        assert.ok(!hostPermissions.includes('*://*/*'), 'ホスト権限に *://*/* が含まれていてはなりません');
-        assert.ok(!hostPermissions.includes('http://*/*'), 'ホスト権限に広範な http ワイルドカードが含まれていてはなりません');
-        assert.ok(!hostPermissions.includes('https://*/*'), 'ホスト権限に広範な https ワイルドカードが含まれていてはなりません');
-    });
-
-    it('host_permissions に Gemini API エンドポイント (https://generativelanguage.googleapis.com/*) のみが指定されていること', () => {
+    it('host_permissions に Gemini API エンドポイントおよび外部画像取得用の http/https 権限が含まれていること', () => {
         const hostPermissions = manifest.host_permissions || [];
         assert.ok(
             hostPermissions.includes('https://generativelanguage.googleapis.com/*'),
             'host_permissions に https://generativelanguage.googleapis.com/* が含まれている必要があります'
         );
-        // 不要な外部ホスト権限が含まれていないことを検証
-        assert.equal(hostPermissions.length, 1, 'host_permissions は Gemini API エンドポイントのみに限定されるべきです');
+        assert.ok(
+            hostPermissions.includes('https://*/*'),
+            'host_permissions に外部画像CORS回避用の https://*/* が含まれている必要があります'
+        );
+        assert.ok(
+            hostPermissions.includes('http://*/*'),
+            'host_permissions に外部画像CORS回避用の http://*/* が含まれている必要があります'
+        );
+        assert.ok(!hostPermissions.includes('<all_urls>'), 'ホスト権限に <all_urls> が含まれていてはなりません');
     });
 
     it('permissions に必要な最小限の機能権限 (activeTab, contextMenus, storage, scripting) が含まれていること', () => {
