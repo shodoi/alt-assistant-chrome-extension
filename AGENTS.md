@@ -6,7 +6,7 @@ Work from `.scratch/alt-assistant-fixes/issues/` (local, gitignored). Each `NN-*
 
 ## Checks
 
-- Tests: `node --test test/`
+- Tests: `node --test "test/**/*.test.js"`
 - Syntax: `node --check` on every tracked `.js` / `.mjs`
 - CI: `.github/workflows/ci.yml` runs both on push and pull request.
 
