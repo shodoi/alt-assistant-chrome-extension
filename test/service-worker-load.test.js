@@ -15,7 +15,8 @@ test('Service Worker importScripts 評価シミュレーションテスト', asy
             'utils/retry.js',
             'utils/image-extractor.js',
             'utils/image-fallback.js',
-            'utils/command-handler.js'
+            'utils/command-handler.js',
+            'utils/generation-state.js'
         ];
 
         // Service Worker の WorkerGlobalScope を模擬
@@ -53,5 +54,9 @@ test('Service Worker importScripts 評価シミュレーションテスト', asy
         assert.equal(typeof context.isSvgImage, 'function', 'isSvgImage が定義されていること');
         assert.equal(typeof context.prepareOptimizedImageWithFallback, 'function', 'prepareOptimizedImageWithFallback が定義されていること');
         assert.equal(typeof context.handleCommandShortcut, 'function', 'handleCommandShortcut が定義されていること');
+        assert.equal(typeof context.beginChatGeneration, 'function', 'beginChatGeneration が定義されていること');
+        assert.equal(typeof context.endChatGeneration, 'function', 'endChatGeneration が定義されていること');
+        assert.equal(typeof context.sendMessageSafely, 'function', 'sendMessageSafely が定義されていること');
+        assert.equal(typeof context.buildModelAwareErrorMessage, 'function', 'buildModelAwareErrorMessage が定義されていること');
     });
 });

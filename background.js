@@ -1,7 +1,7 @@
 // background.js
 
 // ユーティリティスクリプトの同期読み込み (Service Worker)
-importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js', 'utils/image-extractor.js', 'utils/image-fallback.js', 'utils/command-handler.js');
+importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js', 'utils/image-extractor.js', 'utils/image-fallback.js', 'utils/command-handler.js', 'utils/generation-state.js');
 
 // --- 定数定義 (Constants) ---
 /** 使用するGeminiモデルID（高速かつ高性能な最新モデル） */
@@ -34,6 +34,31 @@ const BASE64_CHUNK_SIZE = 8192;
  */
 async function ensureContentScriptInjected(tabId, frameId = 0) {
     return ensureContentScriptReady(tabId, frameId);
+}
+
+/**
+ * タブへ安全にメッセージを送信する
+ * タブやフレームが閉じられている場合でも未処理の Promise 拒否を発生させない
+ * @param {number} tabId
+ * @param {object} message
+ * @param {object} [options={}]
+ * @returns {Promise<{ ok: boolean, response?: any, error?: Error }>}
+ */
+function sendTabMessage(tabId, message, options = {}) {
+    const sendMessage = chrome.tabs.sendMessage.bind(chrome.tabs);
+    if (typeof sendMessageSafely === 'function') {
+        return sendMessageSafely(sendMessage, tabId, message, options);
+    }
+
+    try {
+        const responsePromise = sendMessage(tabId, message, options);
+        if (responsePromise && typeof responsePromise.catch === 'function') {
+            responsePromise.catch(() => {});
+        }
+    } catch {
+        // タブ消失時は無視（呼び出し元はUIを保持しない）
+    }
+    return Promise.resolve({ ok: false });
 }
 
 /**
@@ -84,26 +109,26 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
         }
 
         if (userChoice && finalPrompt) {
-            // UIに生成開始を通知
-            chrome.tabs.sendMessage(tabId, { 
-                action: "startAltTextGeneration", imageUrl, targetElementId, frameId 
+            // UIに生成開始を通知（タブ消失時も未処理の拒否にしない）
+            sendTabMessage(tabId, {
+                action: "startAltTextGeneration", imageUrl, targetElementId, frameId
             }, { frameId });
 
             const result = await generateAltText(imageUrl, finalPrompt, tabId, frameId, targetElementId);
             
             if (result.success) {
-                chrome.tabs.sendMessage(tabId, { 
-                    action: "updateAltText", 
-                    imageUrl, 
-                    altText: result.altText, 
-                    targetElementId, 
-                    frameId, 
-                    model: GEMINI_MODEL_ID, 
-                    modelLabel: GEMINI_MODEL_LABEL, 
-                    aiProvider: 'Gemini' 
-                }, { frameId }, (response) => {
-                    if (chrome.runtime.lastError) {
-                        console.warn('メッセージ送信エラー（タブが閉じられた可能性があります）:', chrome.runtime.lastError.message);
+                sendTabMessage(tabId, {
+                    action: "updateAltText",
+                    imageUrl,
+                    altText: result.altText,
+                    targetElementId,
+                    frameId,
+                    model: GEMINI_MODEL_ID,
+                    modelLabel: GEMINI_MODEL_LABEL,
+                    aiProvider: 'Gemini'
+                }, { frameId }).then((sendResult) => {
+                    if (!sendResult.ok) {
+                        console.warn('メッセージ送信エラー（タブが閉じられた可能性があります）:', sendResult.error?.message);
                     }
                 });
             } else {
@@ -115,22 +140,37 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
     } catch (error) {
         console.error("生成プロセスでエラーが発生しました:", error);
         const classified = error.classified || (typeof classifyApiError === 'function' ? classifyApiError(error) : null);
-        chrome.tabs.sendMessage(tabId, { 
-            action: "errorAltTextGeneration", 
-            imageUrl, 
-            errorMessage: classified?.userMessage || error.message, 
-            errorDetails: classified,
-            errorType: classified?.type || 'UNKNOWN',
-            targetElementId, 
-            frameId, 
+        // エラー詳細に使用モデル名を含め、どのUI（ダイアログ・ステータス・読み上げ）でも一貫して表示できるようにする
+        const errorDetails = classified
+            ? { ...classified, modelLabel: GEMINI_MODEL_LABEL, aiProvider: 'Gemini' }
+            : null;
+        sendTabMessage(tabId, {
+            action: "errorAltTextGeneration",
+            imageUrl,
+            errorMessage: errorDetails?.userMessage || error.message,
+            errorDetails,
+            errorType: errorDetails?.type || 'UNKNOWN',
+            targetElementId,
+            frameId,
             aiProvider: 'Gemini',
             modelLabel: GEMINI_MODEL_LABEL
-        }, { frameId }, (response) => {
-            if (chrome.runtime.lastError) {
-                console.warn('エラーメッセージ送信失敗（タブが閉じられた可能性があります）:', chrome.runtime.lastError.message);
+        }, { frameId }).then((sendResult) => {
+            if (!sendResult.ok) {
+                console.warn('エラーメッセージ送信失敗（タブが閉じられた可能性があります）:', sendResult.error?.message);
             }
         });
     }
+}
+
+/**
+ * 生成プロセスを起動し、想定外の例外が未処理の Promise 拒否にならないようにする
+ * @param {...any} args - startGenerationProcess へ渡す引数
+ * @returns {Promise<void>}
+ */
+function runGenerationProcess(...args) {
+    return startGenerationProcess(...args).catch((error) => {
+        console.error('生成プロセスの実行に失敗しました:', error);
+    });
 }
 
 /**
@@ -152,11 +192,11 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
         const preparedImage = await prepareOptimizedImage(imageUrl, tabId, frameId, targetElementId);
 
         // UIに「Gemini 4 Hydrogen で生成中...」と通知
-        chrome.tabs.sendMessage(tabId, { 
-            action: "updateModelStatus", 
-            imageUrl, 
-            statusText: `${GEMINI_MODEL_LABEL} で生成中...` 
-        }, { frameId }).catch(() => {});
+        sendTabMessage(tabId, {
+            action: "updateModelStatus",
+            imageUrl,
+            statusText: `${GEMINI_MODEL_LABEL} で生成中...`
+        }, { frameId });
 
         console.log(`Generating alt text with ${GEMINI_MODEL_ID}...`);
         const altText = await generateAltTextWithGemini(
@@ -166,13 +206,13 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
             {
                 onRetry: (err, attempt, delayMs) => {
                     console.warn(`Gemini API 一時エラー (試行 ${attempt}/3)、${Math.round(delayMs)}ms 後に再試行します:`, err);
-                    chrome.tabs.sendMessage(tabId, {
+                    sendTabMessage(tabId, {
                         action: "updateModelStatus",
                         imageUrl,
                         statusText: `アクセス集中のため再試行中 (${attempt}/3)...`,
                         isRetry: true,
                         attempt
-                    }, { frameId }).catch(() => {});
+                    }, { frameId });
                 }
             }
         );
@@ -264,8 +304,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
   
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === "instructWithGemini") {
-        startGenerationProcess(info.srcUrl, tab.id, info.frameId, info.targetElementId);
+    if (info.menuItemId === "instructWithGemini" && tab && typeof tab.id === 'number') {
+        runGenerationProcess(info.srcUrl, tab.id, info.frameId, info.targetElementId);
     }
 });
 
@@ -276,19 +316,26 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
             ensureContentScriptReady,
             sendMessage: (tabId, msg) => chrome.tabs.sendMessage(tabId, msg),
             queryTabs: (query) => chrome.tabs.query(query),
-            startGenerationProcess
+            startGenerationProcess: runGenerationProcess
         });
     }
 });
 
 // content.jsからのメッセージリスナー
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.action) {
         case "open_options_page":
             chrome.runtime.openOptionsPage();
+            sendResponse({ accepted: true });
             break;
         case "start_over":
-            startGenerationProcess(
+            if (!sender.tab) {
+                sendResponse({ accepted: false });
+                break;
+            }
+            // 送信側の Promise を「受理済み」で解決し、生成完了は別メッセージで通知する
+            sendResponse({ accepted: true });
+            runGenerationProcess(
                 message.imageUrl, 
                 sender.tab.id, 
                 sender.frameId, 
@@ -296,7 +343,12 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             );
             break;
         case "regenerate_with_context":
-            startGenerationProcess(
+            if (!sender.tab) {
+                sendResponse({ accepted: false });
+                break;
+            }
+            sendResponse({ accepted: true });
+            runGenerationProcess(
                 message.imageUrl, 
                 sender.tab.id, 
                 sender.frameId, 

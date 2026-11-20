@@ -805,6 +805,7 @@
                     }
                 }
                 announceStatus(message.statusText || '画像を解析中…');
+                sendResponse({ success: true });
                 break;
             }
 
@@ -817,11 +818,14 @@
                     }
                 }
                 announceStatus('Altテキストを生成中…');
+                sendResponse({ success: true });
                 break;
             }
 
             case 'updateAltText':
                 handleUpdateAltText(message);
+                // 送信側（callback 形式）のメッセージポートを正常に閉じる
+                sendResponse({ success: true });
                 break;
 
             case 'extractImageFromDom':
@@ -830,13 +834,9 @@
                 return true; // 非同期でsendResponseを呼び出すため
 
             case 'errorAltTextGeneration': {
-                const imageElementForError = findImageElement(message.imageUrl) || lastRightClickedElement;
-                if (imageElementForError) {
-                    handleError(imageElementForError, message);
-                } else {
-                    showGlobalToast(`エラー: ${message.errorMessage}`, 'error');
-                    announceAlert(message.errorMessage || 'Altテキストの生成に失敗しました');
-                }
+                // 画像要素が見つからない場合も handleError 内でグローバルトーストへフォールバックする
+                handleError(findImageElement(message.imageUrl) || lastRightClickedElement, message);
+                sendResponse({ success: true });
                 break;
             }
         }
@@ -869,14 +869,8 @@
         const dialog = getGeminiElement('gemini-alt-dialog');
         if (dialog && dialog.dataset.imageSrc === message.imageUrl) {
             // 同じ画像に対する応答（再生成など）であれば追記
-            const loadingBubble = dialog.querySelector('.chat-bubble-loading');
-            if (loadingBubble) {
-                const wrapper = loadingBubble.closest('.gemini-chat-row');
-                if (wrapper) wrapper.remove();
-                else loadingBubble.remove();
-            }
+            endChatGeneration(dialog);
             addMessageToChat(message.altText, 'ai');
-            toggleDialogInputs(dialog, true);
         } else {
             // 新規ダイアログを開く
             showAltTextDialog(message.altText, imageElement, message.modelLabel, message.targetElementId);
@@ -1243,7 +1237,7 @@
 
         // 送信ボタン (アイコン)
         const sendButton = document.createElement('button');
-        sendButton.className = 'gemini-icon-btn';
+        sendButton.className = 'gemini-icon-btn is-send';
         sendButton.setAttribute('aria-label', '指示を送信');
         sendButton.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" fill="currentColor"/></svg>`;
 
@@ -1279,7 +1273,7 @@
 
         const performSend = () => {
             const instruction = instructionInput.value.trim();
-            if (!instruction) return;
+            if (!instruction || instructionInput.disabled) return;
 
             // 履歴コンテキストを収集
             const historyBubbles = chatHistory.querySelectorAll('.chat-bubble-user, .chat-bubble-ai');
@@ -1296,16 +1290,27 @@
             addMessageToChat(instruction, 'user', applyAltTextToImage);
             addMessageToChat('生成中…', 'loading', applyAltTextToImage);
             announceStatus('再生成リクエストを送信しました。Altテキストを生成中…');
-            toggleDialogInputs(dialog, false);
+            beginChatGeneration(dialog);
 
-            chrome.runtime.sendMessage({
+            sendToBackgroundSafely({
                 action: 'regenerate_with_context',
                 imageUrl: imageElement.src,
                 targetElementId: targetElementId,
                 history: historyString,
                 additionalInstruction: instruction
+            }).then((result) => {
+                if (result.ok) {
+                    instructionInput.value = '';
+                    return;
+                }
+
+                // 送信自体に失敗した場合もチャットを生成中のままにしない
+                endChatGeneration(dialog);
+                const failureMessage = '再生成リクエストの送信に失敗しました。もう一度お試しください。';
+                if (imageElement) showStatus(imageElement, failureMessage, 'error');
+                else showGlobalToast(failureMessage, 'error');
+                announceAlert(failureMessage);
             });
-            instructionInput.value = '';
         };
 
         sendButton.onclick = performSend;
@@ -1470,20 +1475,97 @@
     }
 
     /**
-     * 生成処理中の入力欄・ボタン活性状態を切り替え
-     * @param {HTMLElement} dialog - ダイアログ要素
-     * @param {boolean} enabled - 有効にするか
+     * 生成状態ユーティリティ（window.AltAssistantGenerationState）を取得
+     * @returns {object|null}
      */
-    function toggleDialogInputs(dialog, enabled) {
-        const inputField = dialog.querySelector('#gemini-instruction-input');
-        const sendButton = dialog.querySelector('.gemini-icon-btn');
+    function getGenerationStateUtils() {
+        if (typeof window !== 'undefined' && window.AltAssistantGenerationState) {
+            return window.AltAssistantGenerationState;
+        }
+        return null;
+    }
 
-        if (inputField) {
-            inputField.disabled = !enabled;
+    /**
+     * 再生成リクエスト送信時にチャットを生成中状態へ遷移させる
+     * 送信入力と送信ボタンだけを無効化し、コピー・適用操作は生成中も使えるようにする
+     * @param {HTMLElement} dialog - ダイアログ要素
+     */
+    function beginChatGeneration(dialog) {
+        const utils = getGenerationStateUtils();
+        if (utils && typeof utils.beginChatGeneration === 'function') {
+            utils.beginChatGeneration(dialog);
+            return;
         }
 
-        if (sendButton) {
-            sendButton.disabled = !enabled;
+        const inputField = dialog.querySelector('#gemini-instruction-input');
+        const sendButton = dialog.querySelector('.gemini-icon-btn.is-send');
+        if (inputField) inputField.disabled = true;
+        if (sendButton) sendButton.disabled = true;
+    }
+
+    /**
+     * 生成の結末（成功・APIエラー・レート制限・ネットワーク断・送信失敗）で共通の終了遷移
+     * ローディング表示を必ず取り除き、ユーザーが次の指示を入力できる状態へ戻す
+     * @param {HTMLElement} dialog - ダイアログ要素
+     */
+    function endChatGeneration(dialog) {
+        const utils = getGenerationStateUtils();
+        if (utils && typeof utils.endChatGeneration === 'function') {
+            utils.endChatGeneration(dialog);
+            return;
+        }
+
+        const loadingBubble = dialog.querySelector('.chat-bubble-loading');
+        if (loadingBubble) {
+            const wrapper = loadingBubble.closest('.gemini-chat-row');
+            if (wrapper) wrapper.remove();
+            else loadingBubble.remove();
+        }
+
+        const inputField = dialog.querySelector('#gemini-instruction-input');
+        const sendButton = dialog.querySelector('.gemini-icon-btn.is-send');
+        if (inputField) inputField.disabled = false;
+        if (sendButton) sendButton.disabled = false;
+    }
+
+    /**
+     * エラー案内文へ使用モデル名を一度だけ付与する
+     * @param {string} userMessage - ユーザー向けエラー案内
+     * @param {string} [modelLabel] - 使用モデルの表示名
+     * @returns {string}
+     */
+    function buildModelAwareErrorText(userMessage, modelLabel) {
+        const utils = getGenerationStateUtils();
+        if (utils && typeof utils.buildModelAwareErrorMessage === 'function') {
+            return utils.buildModelAwareErrorMessage(userMessage, modelLabel);
+        }
+
+        const baseMessage = typeof userMessage === 'string' ? userMessage.trim() : '';
+        const label = typeof modelLabel === 'string' ? modelLabel.trim() : '';
+        if (!label || baseMessage.includes(label)) return baseMessage;
+
+        const modelSuffix = `（使用モデル: ${label}）`;
+        return baseMessage ? `${baseMessage}${modelSuffix}` : modelSuffix;
+    }
+
+    /**
+     * chrome.runtime.sendMessage を安全に呼び出し、未処理の Promise 拒否を防ぐ
+     * @param {object} message - 送信メッセージ
+     * @returns {Promise<{ ok: boolean, response?: any, error?: Error }>}
+     */
+    async function sendToBackgroundSafely(message) {
+        const sendMessage = (msg) => chrome.runtime.sendMessage(msg);
+        const utils = getGenerationStateUtils();
+        if (utils && typeof utils.sendMessageSafely === 'function') {
+            return utils.sendMessageSafely(sendMessage, message);
+        }
+
+        try {
+            const response = await sendMessage(message);
+            return { ok: true, response };
+        } catch (error) {
+            console.warn('メッセージ送信に失敗しました（拡張機能の再読み込み等）:', error?.message || error);
+            return { ok: false, error };
         }
     }
 
@@ -1499,26 +1581,31 @@
     /**
      * 各種APIエラーに応じたダイアログ・ステータス表示の分岐
      * 構造化エラー情報 (errorDetails) に応じて、ユーザーが次の行動を取れる親切なモーダルを表示する。
-     * @param {HTMLImageElement} imageElement
+     * どの結末でもチャットのローディング表示を取り除き、入力を再開させる。
+     * @param {HTMLImageElement|null} imageElement
      * @param {object} message
      */
     function handleError(imageElement, message) {
-        // 再生成時にチャットダイアログが開いている場合、ローディング表示を除去
+        // 再生成時にチャットダイアログが開いている場合、必ず生成中状態から復帰させる
         const chatDialog = getGeminiElement('gemini-alt-dialog');
         if (chatDialog && chatDialog.dataset.imageSrc === message.imageUrl) {
-            const loadingBubble = chatDialog.querySelector('.chat-bubble-loading');
-            if (loadingBubble) {
-                const wrapper = loadingBubble.closest('.gemini-chat-row');
-                if (wrapper) wrapper.remove();
-                else loadingBubble.remove();
-            }
+            endChatGeneration(chatDialog);
         }
 
         const errorDetails = message.errorDetails;
         const errorType = message.errorType || errorDetails?.type;
-        const userMsg = errorDetails?.userMessage || message.errorMessage || 'エラーが発生しました。';
-        const provider = message.aiProvider || 'AI';
-        const modelLabel = message.modelLabel || '';
+        const baseUserMessage = errorDetails?.userMessage || message.errorMessage || 'エラーが発生しました。';
+        const provider = message.aiProvider || 'Gemini';
+        const modelLabel = message.modelLabel || errorDetails?.modelLabel || '';
+        const userMsg = buildModelAwareErrorText(baseUserMessage, modelLabel);
+        const dialogDetails = { ...(errorDetails || {}), userMessage: userMsg, modelLabel, aiProvider: provider };
+        const modelSuffix = modelLabel ? ` (${modelLabel})` : '';
+
+        // 画像要素が取得できない場合（DOM外・削除済み等）は画面上部トーストへフォールバック
+        const reportStatus = (statusMessage, statusType) => {
+            if (imageElement) showStatus(imageElement, statusMessage, statusType);
+            else showGlobalToast(statusMessage, statusType);
+        };
 
         // エラー種別の判定 (構造化type優先、フォールバックとしてメッセージ文字列解析)
         const isRateLimit = errorType === 'RATE_LIMIT' ||
@@ -1548,27 +1635,28 @@
             userMsg.includes('クロスオリジン');
 
         if (isRateLimit) {
-            showRateLimitDialog(errorDetails || { modelLabel, userMessage: userMsg });
-            showStatus(imageElement, `${provider}の利用制限到達 (${modelLabel})`, 'rate-limit');
-            announceAlert(userMsg || `${provider}の利用制限（レート制限）に達しました。しばらく待ってから再度お試しください。`);
+            showRateLimitDialog(dialogDetails);
+            reportStatus(`${provider}の利用制限到達${modelSuffix}`, 'rate-limit');
+            announceAlert(userMsg);
         } else if (isApiKeyError) {
-            showApiKeyErrorDialog(errorDetails || { modelLabel, userMessage: userMsg });
-            showStatus(imageElement, `${provider}のAPIキーエラー`, 'error');
-            announceAlert(userMsg || `${provider}のAPIキーが無効または未設定です。設定画面を確認してください。`);
+            showApiKeyErrorDialog(dialogDetails);
+            reportStatus(`${provider}のAPIキーエラー${modelSuffix}`, 'error');
+            announceAlert(userMsg);
         } else if (isNetworkError) {
-            showNetworkErrorDialog(errorDetails || { userMessage: userMsg });
-            showStatus(imageElement, 'ネットワーク通信エラー', 'error');
-            announceAlert(userMsg || 'サーバーとの通信に失敗しました。インターネット接続を確認して再試行してください。');
+            showNetworkErrorDialog(dialogDetails);
+            reportStatus(`ネットワーク通信エラー${modelSuffix}`, 'error');
+            announceAlert(userMsg);
         } else if (isCorsBlocked) {
             showGeneralErrorDialog({
+                ...dialogDetails,
                 title: '🚫 画像のセキュリティ（CORS）制限',
                 userMessage: userMsg || 'この画像はWebサイトのセキュリティ制限（CORS）または認証保護により取得できませんでした。別の画像をお試しいただくか、画像をローカルに保存してご確認ください。'
             });
-            showStatus(imageElement, 'CORS制限により画像取得不可', 'error');
-            announceAlert(userMsg || 'この画像はセキュリティ制限（CORS）により取得できませんでした。');
+            reportStatus(`CORS制限により画像取得不可${modelSuffix}`, 'error');
+            announceAlert(userMsg);
         } else {
-            showGeneralErrorDialog(errorDetails || { userMessage: userMsg });
-            showStatus(imageElement, `エラー: ${userMsg}`, 'error');
+            showGeneralErrorDialog(dialogDetails);
+            reportStatus(`エラー: ${userMsg}`, 'error');
             announceAlert(`Altテキスト生成エラー: ${userMsg}`);
         }
     }
@@ -1747,7 +1835,7 @@
         optionsBtn.onclick = () => {
             if (cleanupA11y) cleanupA11y();
             dialog.remove();
-            chrome.runtime.sendMessage({ action: 'open_options_page' });
+            sendToBackgroundSafely({ action: 'open_options_page' });
         };
         btnContainer.appendChild(optionsBtn);
 
