@@ -257,6 +257,48 @@ try {
   );
   results.steps.instructionDialog = true;
 
+  const promptFocusedExpression = `(() => {
+    const r = ${shadow};
+    const textarea = r.getElementById('gemini-prompt-textarea');
+    return Boolean(textarea && r.activeElement === textarea);
+  })()`;
+
+  // --- 重ねたダイアログ: 最前面だけが Escape で閉じ、フォーカスが戻る ---
+  await swClient.evaluate(`
+    chrome.tabs.sendMessage(${tabId}, {
+      action: 'errorAltTextGeneration',
+      imageUrl: ${JSON.stringify(imageUrl)},
+      errorMessage: 'テスト用のネットワークエラー',
+      errorType: 'NETWORK_ERROR',
+      errorDetails: { type: 'NETWORK_ERROR', userMessage: 'テスト用のネットワークエラー' },
+      aiProvider: 'Gemini'
+    }).then(() => true)
+  `, { awaitPromise: true });
+
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-error-dialog'); })()`),
+    { label: 'stacked error dialog' }
+  );
+
+  await pageClient.evaluate(`(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    return true;
+  })()`);
+
+  await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      return !r.getElementById('gemini-error-dialog') && !!r.getElementById('gemini-instruction-dialog');
+    })()`),
+    { label: 'Escape closes only the topmost dialog' }
+  );
+  results.steps.stackedEscapeClosedTopOnly = true;
+
+  results.steps.focusRestoredToInstruction = await waitFor(
+    () => pageClient.evaluate(promptFocusedExpression),
+    { label: 'focus restoration after closing stacked dialog' }
+  );
+
   await pageClient.evaluate(`(() => {
     const r = ${shadow};
     const textarea = r.getElementById('gemini-prompt-textarea');
@@ -315,6 +357,105 @@ try {
   results.steps.regenerationDialogClosed = await pageClient.evaluate(
     `(() => { const r = ${shadow}; return !r.getElementById('gemini-alt-dialog'); })()`
   );
+
+  // --- 連続する指示リクエスト: 先のリクエストはハングせずキャンセルされる ---
+  await swClient.evaluate(`globalThis.__firstInstruction = null; 'reset'`);
+  await swClient.evaluate(`
+    chrome.tabs.sendMessage(${tabId}, { action: 'showInstructionDialog' })
+      .then((choice) => { globalThis.__firstInstruction = choice == null ? 'null' : 'value'; });
+    'sent-first'
+  `);
+
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-instruction-dialog'); })()`),
+    { label: 'first instruction dialog' }
+  );
+
+  await swClient.evaluate(`
+    chrome.tabs.sendMessage(${tabId}, { action: 'showInstructionDialog' })
+      .then((choice) => { globalThis.__secondInstruction = choice == null ? 'null' : 'value'; });
+    'sent-second'
+  `);
+
+  results.steps.supersededInstructionCancelled = await waitFor(
+    () => swClient.evaluate('globalThis.__firstInstruction'),
+    { label: 'superseded instruction response' }
+  ) === 'null';
+
+  results.steps.singleInstructionDialog = await pageClient.evaluate(
+    `(() => { const r = ${shadow}; return r.querySelectorAll('#gemini-instruction-dialog').length === 1; })()`
+  );
+
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.getElementById('cancel-instruction-dialog').click(); return true; })()`);
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !r.getElementById('gemini-instruction-dialog'); })()`),
+    { label: 'second instruction dialog cancelled' }
+  );
+
+  // --- 閉じたチャットへの遅延結果: 再表示せず、次の生成結果は表示する ---
+  const sendAltResult = (altText) => swClient.evaluate(`
+    chrome.tabs.sendMessage(${tabId}, {
+      action: 'updateAltText',
+      imageUrl: ${JSON.stringify(imageUrl)},
+      altText: ${JSON.stringify(altText)},
+      aiProvider: 'Gemini'
+    }).then(() => true)
+  `, { awaitPromise: true });
+
+  await swClient.evaluate(`
+    chrome.tabs.sendMessage(${tabId}, { action: 'startAltTextGeneration', imageUrl: ${JSON.stringify(imageUrl)} })
+      .then(() => true)
+  `, { awaitPromise: true });
+
+  await sendAltResult('破棄テスト前の結果');
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-alt-dialog'); })()`),
+    { label: 'chat dialog opened for result gate' }
+  );
+
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !r.getElementById('gemini-alt-dialog'); })()`),
+    { label: 'chat dialog closed before late result' }
+  );
+
+  await sendAltResult('閉じた後の遅延結果');
+  await sleep(300);
+  results.steps.lateResultSuppressed = await pageClient.evaluate(
+    `(() => { const r = ${shadow}; return !r.getElementById('gemini-alt-dialog'); })()`
+  );
+
+  await sendAltResult('再表示される次の結果');
+  results.steps.lateResultSuppressionConsumed = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const dialog = r && r.getElementById('gemini-alt-dialog');
+      const areas = dialog ? [...dialog.querySelectorAll('.chat-bubble-ai textarea')] : [];
+      return areas.length ? areas[0].value : null;
+    })()`),
+    { label: 'next result delivered after suppressed one' }
+  ) === '再表示される次の結果';
+
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+
+  if (results.steps.stackedEscapeClosedTopOnly !== true) {
+    results.errors.push('Escape closed more than the topmost dialog');
+  }
+  if (results.steps.focusRestoredToInstruction !== true) {
+    results.errors.push('focus was not restored to the underlying instruction dialog');
+  }
+  if (results.steps.supersededInstructionCancelled !== true) {
+    results.errors.push('superseded instruction request was not cancelled (possible hang)');
+  }
+  if (results.steps.singleInstructionDialog !== true) {
+    results.errors.push('more than one instruction dialog remained open');
+  }
+  if (results.steps.lateResultSuppressed !== true) {
+    results.errors.push('late result reopened a closed chat dialog');
+  }
+  if (results.steps.lateResultSuppressionConsumed !== true) {
+    results.errors.push('result after a suppressed one was not delivered');
+  }
 
   if (results.steps.firstAltText !== 'スモークテスト用の代替テキスト') {
     results.errors.push(`unexpected first alt text: ${results.steps.firstAltText}`);

@@ -810,6 +810,9 @@
             }
 
             case 'startAltTextGeneration': {
+                // 新たに生成を開始する画像は、過去に閉じたチャットの破棄予約を解除する
+                resultGate.clear(message.imageUrl);
+
                 const imageElementForLoading = findImageElement(message.imageUrl) || lastRightClickedElement;
                 if (imageElementForLoading) {
                     const dialog = getGeminiElement('gemini-alt-dialog');
@@ -856,6 +859,13 @@
     function handleUpdateAltText(message) {
         const imageElement = findImageElement(message.imageUrl);
         if (!imageElement) return;
+
+        // 生成中にチャットを閉じた画像の遅延結果は再表示しない
+        if (!resultGate.shouldDeliver(message.imageUrl)) {
+            const suppressedStatus = getShadowRoot().querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
+            if (suppressedStatus) suppressedStatus.remove();
+            return;
+        }
 
         // ステータスバッジの除去
         const existingStatus = getShadowRoot().querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
@@ -946,6 +956,169 @@
     }
 
     /**
+     * dialog-lifecycle モジュール（Content Script より先に注入される）
+     * 未ロード環境でも動作を継続できるよう最小限のフォールバックを用意する
+     */
+    const dialogLifecycle = (typeof window !== 'undefined' && window.AltAssistantDialogLifecycle)
+        ? window.AltAssistantDialogLifecycle
+        : null;
+
+    /**
+     * フォールバック: 非同期応答を一度だけ解決する
+     * @returns {object}
+     */
+    function createFallbackPendingResponse() {
+        let current = null;
+        return {
+            begin(respond) {
+                const previous = current;
+                const token = {};
+                current = { token, respond };
+                if (previous) previous.respond(null);
+                return token;
+            },
+            settle(token, value) {
+                if (!current || current.token !== token) return false;
+                const { respond } = current;
+                current = null;
+                respond(value);
+                return true;
+            },
+            isCurrent(token) {
+                return Boolean(current && current.token === token);
+            },
+            isPending() {
+                return current !== null;
+            }
+        };
+    }
+
+    /**
+     * フォールバック: 閉じたチャットへの遅延結果を1件だけ破棄する
+     * @returns {object}
+     */
+    function createFallbackResultGate() {
+        const discarded = new Set();
+        return {
+            noteClosed(imageUrl) {
+                if (imageUrl) discarded.add(imageUrl);
+            },
+            clear(imageUrl) {
+                if (imageUrl) discarded.delete(imageUrl);
+            },
+            shouldDeliver(imageUrl) {
+                if (!imageUrl) return true;
+                if (!discarded.has(imageUrl)) return true;
+                discarded.delete(imageUrl);
+                return false;
+            },
+            isDiscarded(imageUrl) {
+                return Boolean(imageUrl) && discarded.has(imageUrl);
+            }
+        };
+    }
+
+    /** 指示ダイアログの非同期応答（ちょうど一度だけ解決する） */
+    const pendingInstruction = dialogLifecycle
+        ? dialogLifecycle.createPendingResponse()
+        : createFallbackPendingResponse();
+
+    /** 閉じたチャットへの遅延結果ゲート */
+    const resultGate = dialogLifecycle
+        ? dialogLifecycle.createResultGate()
+        : createFallbackResultGate();
+
+    /** @type {object|null} ダイアログスタック（遅延生成） */
+    let dialogStack = null;
+
+    /**
+     * ダイアログ内のフォーカス可能要素を DOM 順で取得する
+     * @param {HTMLElement} dialog
+     * @returns {HTMLElement[]}
+     */
+    function getFocusableElements(dialog) {
+        if (!dialog || typeof dialog.querySelectorAll !== 'function') return [];
+
+        const selector = [
+            'button:not([disabled])',
+            'textarea:not([disabled])',
+            'input:not([disabled])',
+            'select:not([disabled])',
+            'a[href]',
+            '[tabindex]:not([tabindex="-1"])'
+        ].join(', ');
+
+        return Array.from(dialog.querySelectorAll(selector)).filter((el) => {
+            if (el.hasAttribute('disabled')) return false;
+            if (el.getAttribute('aria-hidden') === 'true') return false;
+            if (el.style && (el.style.display === 'none' || el.style.visibility === 'hidden')) return false;
+            if (typeof el.offsetWidth === 'number' && typeof el.offsetHeight === 'number' && el.offsetParent !== undefined) {
+                if (el.offsetWidth === 0 && el.offsetHeight === 0 && el.offsetParent === null) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    }
+
+    /**
+     * ダイアログスタックを取得する（初回のみ生成）
+     * @returns {object|null}
+     */
+    function getDialogStack() {
+        if (!dialogLifecycle) return null;
+        if (dialogStack) return dialogStack;
+
+        dialogStack = dialogLifecycle.createDialogStack({
+            document: document,
+            getActiveElement: () => getDeepActiveElement(document),
+            getFocusableElements: getFocusableElements,
+            restoreFocus: restoreFocusSafely
+        });
+        return dialogStack;
+    }
+
+    /**
+     * ダイアログを閉じる（キーボードリスナー・フォーカス管理もまとめて解除）
+     * @param {HTMLElement|null} dialog
+     * @param {object} [options={}]
+     * @param {boolean} [options.restoreFocus=true] - 元のフォーカス位置へ戻すか
+     * @param {boolean} [options.invokeOnClose=true] - onClose コールバックを呼ぶか
+     */
+    function closeDialogElement(dialog, options = {}) {
+        if (!dialog) return;
+
+        const stack = getDialogStack();
+        if (stack) {
+            stack.close(dialog, {
+                restoreFocus: options.restoreFocus !== false,
+                invokeOnClose: options.invokeOnClose !== false
+            });
+            return;
+        }
+
+        // dialog-lifecycle 未ロード時のフォールバック
+        if (typeof dialog._a11yCleanup === 'function') {
+            dialog._a11yCleanup();
+            dialog._a11yCleanup = null;
+        }
+        if (options.restoreFocus !== false) {
+            restoreFocusSafely(dialog._restoreFocusElement || lastRightClickedElement);
+        }
+        if (dialog.parentNode) dialog.remove();
+    }
+
+    /**
+     * チャットダイアログが閉じられたことを記録する
+     * 生成中のまま閉じた場合、後から届く結果で再表示しない
+     * @param {HTMLElement} dialog
+     */
+    function handleChatDialogClosed(dialog) {
+        if (!dialog) return;
+        resultGate.noteClosed(dialog.dataset.imageSrc);
+    }
+
+    /**
      * ダイアログ要素に WAI-ARIA 属性、フォーカストラップ (Focus Trap)、
      * Escapeキー終了、フォーカス復帰 (Focus Restoration) を付与する
      * @param {HTMLElement} dialog - 対象のダイアログ要素
@@ -959,12 +1132,25 @@
     function attachDialogAccessibility(dialog, options = {}) {
         if (!dialog) return () => {};
 
-        // 外部モジュール window.AltAssistantA11y がロード済みの場合は委譲
-        if (typeof window !== 'undefined' && window.AltAssistantA11y && typeof window.AltAssistantA11y.attachDialogA11y === 'function') {
-            return window.AltAssistantA11y.attachDialogA11y(dialog, options);
+        const deepActiveElement = getDeepActiveElement(document);
+        const defaultRestoreElement = (deepActiveElement && deepActiveElement !== document.body && deepActiveElement !== document.documentElement)
+            ? deepActiveElement
+            : lastRightClickedElement;
+        // 重ねて開いた場合は「直前までフォーカスしていた要素」へ戻す
+        const restoreFocusElement = options.restoreFocusElement || defaultRestoreElement;
+
+        // スタック管理を最優先する（複数ダイアログの Escape / Tab を一元制御するため）
+        const stack = getDialogStack();
+        if (stack) {
+            return stack.register(dialog, { ...options, restoreFocusElement });
         }
 
-        const { titleElement, onClose, initialFocusElement, restoreFocusElement } = options;
+        // 外部モジュール window.AltAssistantA11y がロード済みの場合は委譲
+        if (typeof window !== 'undefined' && window.AltAssistantA11y && typeof window.AltAssistantA11y.attachDialogA11y === 'function') {
+            return window.AltAssistantA11y.attachDialogA11y(dialog, { ...options, restoreFocusElement });
+        }
+
+        const { titleElement, onClose, initialFocusElement } = options;
 
         const role = options.role || dialog.getAttribute('role') || 'dialog';
         dialog.setAttribute('role', role);
@@ -1068,9 +1254,10 @@
             }
         }, 0);
 
+        dialog._a11yCleanup = cleanup;
+        dialog._restoreFocusElement = elementToRestore;
         return cleanup;
     }
-
 
     /**
      * ユーザー指示入力ダイアログを表示
@@ -1078,7 +1265,10 @@
      */
     function showInstructionDialog(onSubmit) {
         const existingDialog = getGeminiElement('gemini-instruction-dialog');
-        if (existingDialog) existingDialog.remove();
+        if (existingDialog) {
+            // 先行する指示リクエストは下の pendingInstruction.begin() で null 解決される
+            closeDialogElement(existingDialog, { restoreFocus: false, invokeOnClose: false });
+        }
 
         const dialog = document.createElement('div');
         dialog.id = 'gemini-instruction-dialog';
@@ -1124,20 +1314,24 @@
 
         getShadowRoot().appendChild(dialog);
 
-        let cleanupA11y = null;
         const closeDialog = () => {
-            if (cleanupA11y) cleanupA11y();
-            dialog.remove();
+            closeDialogElement(dialog);
         };
+
+        // 先行リクエストがあればここで null 解決し、待機中の sendResponse を解放する
+        const requestToken = pendingInstruction.begin(onSubmit);
 
         const performSubmit = () => {
             const promptVal = textArea.value.trim();
             if (!promptVal) return;
-            announceStatus('Altテキストの生成リクエストを送信しました。生成中…');
-            onSubmit({
+
+            const settled = pendingInstruction.settle(requestToken, {
                 prompt: promptVal,
                 aiProvider: 'Gemini'
             });
+            if (!settled) return; // すでにキャンセル済み・送信済み
+
+            announceStatus('Altテキストの生成リクエストを送信しました。生成中…');
             closeDialog();
         };
 
@@ -1149,21 +1343,21 @@
         });
 
         cancelButton.onclick = () => {
-            announceStatus('Altテキストの生成をキャンセルしました');
-            onSubmit(null);
+            if (pendingInstruction.settle(requestToken, null)) {
+                announceStatus('Altテキストの生成をキャンセルしました');
+            }
             closeDialog();
         };
         submitButton.onclick = performSubmit;
 
-        cleanupA11y = attachDialogAccessibility(dialog, {
+        attachDialogAccessibility(dialog, {
             titleElement: titleElement,
             onClose: () => {
-                announceStatus('Altテキストの生成をキャンセルしました');
-                onSubmit(null);
-                dialog.remove();
+                if (pendingInstruction.settle(requestToken, null)) {
+                    announceStatus('Altテキストの生成をキャンセルしました');
+                }
             },
-            initialFocusElement: textArea,
-            restoreFocusElement: lastRightClickedElement
+            initialFocusElement: textArea
         });
 
         textArea.focus();
@@ -1186,7 +1380,10 @@
      */
     function showAltTextDialog(initialAltText, imageElement, modelLabel, targetElementId) {
         const existingDialog = getGeminiElement('gemini-alt-dialog');
-        if (existingDialog) existingDialog.remove();
+        if (existingDialog) {
+            // 置き換え時はフォーカスも遅延結果の破棄予約も引き継がない
+            closeDialogElement(existingDialog, { restoreFocus: false, invokeOnClose: false });
+        }
 
         const dialog = document.createElement('div');
         dialog.id = 'gemini-alt-dialog';
@@ -1209,10 +1406,8 @@
         closeButton.setAttribute('aria-label', 'ダイアログを閉じる');
         closeButton.textContent = '×';
 
-        let cleanupA11y = null;
         const closeDialog = () => {
-            if (cleanupA11y) cleanupA11y();
-            dialog.remove();
+            closeDialogElement(dialog);
         };
 
         closeButton.onclick = closeDialog;
@@ -1334,9 +1529,9 @@
 
         // 初期フォーカスは AI メッセージの Alt適用ボタン（または入力欄）
         const firstApplyBtn = dialog.querySelector('.gemini-icon-btn.is-apply');
-        cleanupA11y = attachDialogAccessibility(dialog, {
+        attachDialogAccessibility(dialog, {
             titleElement: title,
-            onClose: () => dialog.remove(),
+            onClose: () => handleChatDialogClosed(dialog),
             initialFocusElement: firstApplyBtn || instructionInput,
             restoreFocusElement: imageElement
         });
@@ -1750,7 +1945,9 @@
      */
     function showRateLimitDialog(details = {}) {
         const existingDialog = getGeminiElement('gemini-error-dialog');
-        if (existingDialog) existingDialog.remove();
+        if (existingDialog) {
+            closeDialogElement(existingDialog, { restoreFocus: false });
+        }
 
         const dialog = document.createElement('div');
         dialog.id = 'gemini-error-dialog';
@@ -1777,22 +1974,18 @@
         closeBtn.className = 'gemini-btn gemini-btn-warning';
         closeBtn.textContent = '閉じる';
 
-        let cleanupA11y = null;
         closeBtn.onclick = () => {
-            if (cleanupA11y) cleanupA11y();
-            dialog.remove();
+            closeDialogElement(dialog);
         };
 
         btnContainer.appendChild(closeBtn);
         dialog.appendChild(btnContainer);
         getShadowRoot().appendChild(dialog);
 
-        cleanupA11y = attachDialogAccessibility(dialog, {
+        attachDialogAccessibility(dialog, {
             titleElement: title,
             role: 'alertdialog',
-            onClose: () => dialog.remove(),
-            initialFocusElement: closeBtn,
-            restoreFocusElement: lastRightClickedElement
+            initialFocusElement: closeBtn
         });
     }
 
@@ -1803,7 +1996,9 @@
      */
     function showApiKeyErrorDialog(details = {}) {
         const existingDialog = getGeminiElement('gemini-error-dialog');
-        if (existingDialog) existingDialog.remove();
+        if (existingDialog) {
+            closeDialogElement(existingDialog, { restoreFocus: false });
+        }
 
         const dialog = document.createElement('div');
         dialog.id = 'gemini-error-dialog';
@@ -1826,15 +2021,12 @@
         const btnContainer = document.createElement('div');
         btnContainer.className = 'gemini-btn-row';
 
-        let cleanupA11y = null;
-
         // 設定画面を開くプライマリボタン
         const optionsBtn = document.createElement('button');
         optionsBtn.className = 'gemini-btn gemini-btn-primary';
         optionsBtn.textContent = '設定を開く';
         optionsBtn.onclick = () => {
-            if (cleanupA11y) cleanupA11y();
-            dialog.remove();
+            closeDialogElement(dialog);
             sendToBackgroundSafely({ action: 'open_options_page' });
         };
         btnContainer.appendChild(optionsBtn);
@@ -1843,20 +2035,17 @@
         closeBtn.className = 'gemini-btn gemini-btn-cancel';
         closeBtn.textContent = '閉じる';
         closeBtn.onclick = () => {
-            if (cleanupA11y) cleanupA11y();
-            dialog.remove();
+            closeDialogElement(dialog);
         };
         btnContainer.appendChild(closeBtn);
 
         dialog.appendChild(btnContainer);
         getShadowRoot().appendChild(dialog);
 
-        cleanupA11y = attachDialogAccessibility(dialog, {
+        attachDialogAccessibility(dialog, {
             titleElement: title,
             role: 'alertdialog',
-            onClose: () => dialog.remove(),
-            initialFocusElement: optionsBtn,
-            restoreFocusElement: lastRightClickedElement
+            initialFocusElement: optionsBtn
         });
     }
 
@@ -1866,7 +2055,9 @@
      */
     function showNetworkErrorDialog(details = {}) {
         const existingDialog = getGeminiElement('gemini-error-dialog');
-        if (existingDialog) existingDialog.remove();
+        if (existingDialog) {
+            closeDialogElement(existingDialog, { restoreFocus: false });
+        }
 
         const dialog = document.createElement('div');
         dialog.id = 'gemini-error-dialog';
@@ -1893,22 +2084,18 @@
         closeBtn.className = 'gemini-btn gemini-btn-primary';
         closeBtn.textContent = '閉じる';
 
-        let cleanupA11y = null;
         closeBtn.onclick = () => {
-            if (cleanupA11y) cleanupA11y();
-            dialog.remove();
+            closeDialogElement(dialog);
         };
 
         btnContainer.appendChild(closeBtn);
         dialog.appendChild(btnContainer);
         getShadowRoot().appendChild(dialog);
 
-        cleanupA11y = attachDialogAccessibility(dialog, {
+        attachDialogAccessibility(dialog, {
             titleElement: title,
             role: 'alertdialog',
-            onClose: () => dialog.remove(),
-            initialFocusElement: closeBtn,
-            restoreFocusElement: lastRightClickedElement
+            initialFocusElement: closeBtn
         });
     }
 
@@ -1918,7 +2105,9 @@
      */
     function showGeneralErrorDialog(details = {}) {
         const existingDialog = getGeminiElement('gemini-error-dialog');
-        if (existingDialog) existingDialog.remove();
+        if (existingDialog) {
+            closeDialogElement(existingDialog, { restoreFocus: false });
+        }
 
         const dialog = document.createElement('div');
         dialog.id = 'gemini-error-dialog';
@@ -1945,22 +2134,18 @@
         closeBtn.className = 'gemini-btn gemini-btn-danger';
         closeBtn.textContent = '閉じる';
 
-        let cleanupA11y = null;
         closeBtn.onclick = () => {
-            if (cleanupA11y) cleanupA11y();
-            dialog.remove();
+            closeDialogElement(dialog);
         };
 
         btnContainer.appendChild(closeBtn);
         dialog.appendChild(btnContainer);
         getShadowRoot().appendChild(dialog);
 
-        cleanupA11y = attachDialogAccessibility(dialog, {
+        attachDialogAccessibility(dialog, {
             titleElement: title,
             role: 'alertdialog',
-            onClose: () => dialog.remove(),
-            initialFocusElement: closeBtn,
-            restoreFocusElement: lastRightClickedElement
+            initialFocusElement: closeBtn
         });
     }
 
