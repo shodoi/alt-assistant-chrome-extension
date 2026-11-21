@@ -770,16 +770,32 @@
                 return false;
             }
 
-            case 'showInstructionDialog':
-                showInstructionDialog((userChoice) => sendResponse(userChoice));
+            case 'showInstructionDialog': {
+                const binding = correlation.bindRequest({
+                    requestId: message.requestId,
+                    targetElementId: message.targetElementId,
+                    imageUrl: message.imageUrl,
+                    lastRightClickedElement: lastRightClickedElement
+                });
+                showInstructionDialog((userChoice) => sendResponse(userChoice), binding);
                 return true; // 非同期でsendResponseを呼び出すため
+            }
 
             case 'updateModelStatus': {
-                const imageElementForStatus = findImageElement(message.imageUrl) || lastRightClickedElement;
+                const imageElementForStatus = correlation.resolveTarget({
+                    requestId: message.requestId,
+                    targetElementId: message.targetElementId,
+                    imageUrl: message.imageUrl,
+                    fallbackElement: lastRightClickedElement
+                });
                 if (imageElementForStatus) {
                     const dialog = getGeminiElement('gemini-alt-dialog');
-                    if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
-                        showStatus(imageElementForStatus, message.statusText, 'loading');
+                    if (!correlation.isSameDialogTarget(dialog, message)) {
+                        showStatus(imageElementForStatus, message.statusText, 'loading', {
+                            requestId: message.requestId,
+                            targetElementId: message.targetElementId,
+                            imageUrl: message.imageUrl
+                        });
                     } else {
                         // チャットダイアログ内でもリトライ進捗をリアルタイム表示
                         const loadingBubbleText = dialog.querySelector('.chat-bubble-loading span');
@@ -794,14 +810,25 @@
             }
 
             case 'startAltTextGeneration': {
-                // 新たに生成を開始する画像は、過去に閉じたチャットの破棄予約を解除する
-                resultGate.clear(message.imageUrl);
+                // 新たに生成を開始するリクエストは、過去に閉じたチャットの破棄予約を解除する
+                const gateKey = message.requestId || message.imageUrl;
+                resultGate.clear(gateKey);
 
-                const imageElementForLoading = findImageElement(message.imageUrl) || lastRightClickedElement;
+                const binding = correlation.bindRequest({
+                    requestId: message.requestId,
+                    targetElementId: message.targetElementId,
+                    imageUrl: message.imageUrl,
+                    lastRightClickedElement: lastRightClickedElement
+                });
+                const imageElementForLoading = binding.element || lastRightClickedElement;
                 if (imageElementForLoading) {
                     const dialog = getGeminiElement('gemini-alt-dialog');
-                    if (!dialog || dialog.dataset.imageSrc !== message.imageUrl) {
-                        showStatus(imageElementForLoading, 'AIで生成を開始...', 'loading');
+                    if (!correlation.isSameDialogTarget(dialog, message)) {
+                        showStatus(imageElementForLoading, 'AIで生成を開始...', 'loading', {
+                            requestId: message.requestId || binding.requestId,
+                            targetElementId: binding.targetId,
+                            imageUrl: binding.imageUrl || message.imageUrl
+                        });
                     }
                 }
                 announceStatus('Altテキストを生成中…');
@@ -822,7 +849,13 @@
 
             case 'errorAltTextGeneration': {
                 // 画像要素が見つからない場合も handleError 内でグローバルトーストへフォールバックする
-                handleError(findImageElement(message.imageUrl) || lastRightClickedElement, message);
+                const errorTarget = correlation.resolveTarget({
+                    requestId: message.requestId,
+                    targetElementId: message.targetElementId,
+                    imageUrl: message.imageUrl,
+                    fallbackElement: lastRightClickedElement
+                });
+                handleError(errorTarget, message);
                 sendResponse({ success: true });
                 break;
             }
@@ -831,28 +864,52 @@
         return false;
     });
 
-    // 右クリックされた要素を追跡
-    document.addEventListener('mousedown', (event) => {
-        if (event.button === 2) { // Right click
-            lastRightClickedElement = event.target;
-        }
-    }, true);
+    // 右クリックされた要素を追跡（mousedown と contextmenu の双方で捕捉）
+    const recordRightClickTarget = (event) => {
+        if (event.type === 'mousedown' && event.button !== 2) return;
+        lastRightClickedElement = imageCorrelation
+            ? imageCorrelation.normalizeImageElement(event.target)
+            : event.target;
+    };
+    document.addEventListener('mousedown', recordRightClickTarget, true);
+    document.addEventListener('contextmenu', recordRightClickTarget, true);
 
     // --- メッセージハンドラ ---
 
     function handleUpdateAltText(message) {
-        const imageElement = findImageElement(message.imageUrl);
+        const imageElement = correlation.resolveTarget({
+            requestId: message.requestId,
+            targetElementId: message.targetElementId,
+            imageUrl: message.imageUrl,
+            fallbackElement: lastRightClickedElement
+        });
         if (!imageElement) return;
 
+        const displayedUrl = (imageCorrelation
+            ? imageCorrelation.getDisplayedImageUrl(imageElement)
+            : (imageElement.currentSrc || imageElement.src)) || message.imageUrl || '';
+        const resolvedTargetId = correlation.ensureTargetId(imageElement, message.targetElementId);
+
         // 生成中にチャットを閉じた画像の遅延結果は再表示しない
-        if (!resultGate.shouldDeliver(message.imageUrl)) {
-            const suppressedStatus = getShadowRoot().querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
+        const gateKey = message.requestId || message.imageUrl;
+        if (!resultGate.shouldDeliver(gateKey)) {
+            const suppressedStatus = correlation.findStatusBadge(getShadowRoot(), {
+                requestId: message.requestId,
+                targetElementId: resolvedTargetId,
+                element: imageElement,
+                imageUrl: displayedUrl
+            });
             if (suppressedStatus) suppressedStatus.remove();
             return;
         }
 
         // ステータスバッジの除去
-        const existingStatus = getShadowRoot().querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
+        const existingStatus = correlation.findStatusBadge(getShadowRoot(), {
+            requestId: message.requestId,
+            targetElementId: resolvedTargetId,
+            element: imageElement,
+            imageUrl: displayedUrl
+        });
         if (existingStatus) {
             existingStatus.remove();
         }
@@ -861,13 +918,13 @@
         announceSuccess(message.altText);
 
         const dialog = getGeminiElement('gemini-alt-dialog');
-        if (dialog && dialog.dataset.imageSrc === message.imageUrl) {
-            // 同じ画像に対する応答（再生成など）であれば追記
+        if (correlation.isSameDialogTarget(dialog, message)) {
+            // 同じ対象に対する応答（再生成など）であれば追記
             endChatGeneration(dialog);
             addMessageToChat(message.altText, 'ai');
         } else {
             // 新規ダイアログを開く
-            showAltTextDialog(message.altText, imageElement, message.modelLabel, message.targetElementId);
+            showAltTextDialog(message.altText, imageElement, message.modelLabel, resolvedTargetId, message.requestId, displayedUrl);
         }
     }
 
@@ -1012,6 +1069,46 @@
         ? dialogLifecycle.createResultGate()
         : createFallbackResultGate();
 
+    /**
+     * image-correlation モジュール（Content Script より先に注入される）
+     * srcset・同一URL複数要素・安全なバッジ検索を担う
+     */
+    const imageCorrelation = (typeof window !== 'undefined' && window.AltAssistantImageCorrelation)
+        ? window.AltAssistantImageCorrelation
+        : null;
+
+    const correlation = imageCorrelation
+        ? imageCorrelation.createCorrelationRegistry({
+            document: document,
+            isNodeConnected: isNodeConnected
+        })
+        : {
+            ensureTargetId: (el, id) => id || (el && el.id) || null,
+            resolveTarget: ({ targetElementId, imageUrl, fallbackElement } = {}) => {
+                if (targetElementId) {
+                    const byId = document.getElementById(targetElementId);
+                    if (byId) return byId;
+                }
+                return findImageElement(imageUrl) || fallbackElement || null;
+            },
+            bindRequest: ({ requestId, targetElementId, imageUrl, element, lastRightClickedElement } = {}) => {
+                const target = element || (targetElementId && document.getElementById(targetElementId)) || lastRightClickedElement || findImageElement(imageUrl);
+                return {
+                    element: target,
+                    requestId: requestId || null,
+                    targetId: targetElementId || (target && target.id) || null,
+                    imageUrl: (target && (target.currentSrc || target.src)) || imageUrl || ''
+                };
+            },
+            findStatusBadge: (root, { imageUrl } = {}) => {
+                if (!root) return null;
+                return Array.from(root.querySelectorAll('.gemini-alt-status')).find(
+                    (el) => !el.classList.contains('is-global') && el.dataset?.imageSrc === imageUrl
+                ) || null;
+            },
+            isSameDialogTarget: (dialog, message = {}) => Boolean(dialog && message.imageUrl && dialog.dataset?.imageSrc === message.imageUrl)
+        };
+
     /** @type {object|null} ダイアログスタック（遅延生成） */
     let dialogStack = null;
 
@@ -1099,7 +1196,7 @@
      */
     function handleChatDialogClosed(dialog) {
         if (!dialog) return;
-        resultGate.noteClosed(dialog.dataset.imageSrc);
+        resultGate.noteClosed(dialog.dataset.requestId || dialog.dataset.imageSrc);
     }
 
     /**
@@ -1242,7 +1339,7 @@
      * ユーザー指示入力ダイアログを表示
      * @param {Function} onSubmit - 送信時のコールバック
      */
-    function showInstructionDialog(onSubmit) {
+    function showInstructionDialog(onSubmit, binding = null) {
         const existingDialog = getGeminiElement('gemini-instruction-dialog');
         if (existingDialog) {
             // 先行する指示リクエストは下の pendingInstruction.begin() で null 解決される
@@ -1306,7 +1403,10 @@
 
             const settled = pendingInstruction.settle(requestToken, {
                 prompt: promptVal,
-                aiProvider: 'Gemini'
+                aiProvider: 'Gemini',
+                resolvedImageUrl: binding?.imageUrl || undefined,
+                targetElementId: binding?.targetId || undefined,
+                requestId: binding?.requestId || undefined
             });
             if (!settled) return; // すでにキャンセル済み・送信済み
 
@@ -1348,26 +1448,28 @@
      * @param {string} initialAltText - 初回生成されたAltテキスト
      * @param {HTMLImageElement} imageElement - 対象の画像要素
      * @param {string} modelLabel - 使用モデルの表示名
-     * @param {string} targetElementId - 対象画像要素のID
+     * @param {string} [targetElementId] - 対象画像要素のID
+     * @param {string} [requestId] - リクエスト相関ID
+     * @param {string} [messageImageUrl] - メッセージから渡された表示画像URL
      */
-    /**
-     * Altテキスト生成結果ダイアログ（対話チャット）を表示
-     * @param {string} initialAltText - 初回生成されたAltテキスト
-     * @param {HTMLImageElement} imageElement - 対象の画像要素
-     * @param {string} modelLabel - 使用モデルの表示名
-     * @param {string} targetElementId - 対象画像要素のID
-     */
-    function showAltTextDialog(initialAltText, imageElement, modelLabel, targetElementId) {
+    function showAltTextDialog(initialAltText, imageElement, modelLabel, targetElementId, requestId, messageImageUrl) {
         const existingDialog = getGeminiElement('gemini-alt-dialog');
         if (existingDialog) {
             // 置き換え時はフォーカスも遅延結果の破棄予約も引き継がない
             closeDialogElement(existingDialog, { restoreFocus: false, invokeOnClose: false });
         }
 
+        const displayedUrl = messageImageUrl || (imageCorrelation
+            ? imageCorrelation.getDisplayedImageUrl(imageElement)
+            : (imageElement.currentSrc || imageElement.src)) || '';
+        const resolvedTargetId = correlation.ensureTargetId(imageElement, targetElementId);
+
         const dialog = document.createElement('div');
         dialog.id = 'gemini-alt-dialog';
         dialog.className = 'gemini-dialog gemini-dialog-chat';
-        dialog.dataset.imageSrc = imageElement.src;
+        dialog.dataset.imageSrc = displayedUrl;
+        if (requestId) dialog.dataset.requestId = requestId;
+        if (resolvedTargetId) dialog.dataset.targetElementId = resolvedTargetId;
 
         // ヘッダー部
         const header = document.createElement('div');
@@ -1423,7 +1525,11 @@
             if (imageElement) {
                 imageElement.setAttribute('alt', cleanText);
                 imageElement.alt = cleanText;
-                showStatus(imageElement, 'Altテキストを画像に適用しました ✓', 'success');
+                showStatus(imageElement, 'Altテキストを画像に適用しました ✓', 'success', {
+                    requestId: requestId,
+                    targetElementId: resolvedTargetId,
+                    imageUrl: displayedUrl
+                });
             }
 
             announceStatus('画像にAltテキストを適用しました');
@@ -1468,8 +1574,9 @@
 
             sendToBackgroundSafely({
                 action: 'regenerate_with_context',
-                imageUrl: imageElement.src,
-                targetElementId: targetElementId,
+                imageUrl: displayedUrl,
+                targetElementId: resolvedTargetId,
+                requestId: requestId,
                 history: historyString,
                 additionalInstruction: instruction
             }).then((result) => {
@@ -1481,8 +1588,15 @@
                 // 送信自体に失敗した場合もチャットを生成中のままにしない
                 endChatGeneration(dialog);
                 const failureMessage = '再生成リクエストの送信に失敗しました。もう一度お試しください。';
-                if (imageElement) showStatus(imageElement, failureMessage, 'error');
-                else showGlobalToast(failureMessage, 'error');
+                if (imageElement) {
+                    showStatus(imageElement, failureMessage, 'error', {
+                        requestId: requestId,
+                        targetElementId: resolvedTargetId,
+                        imageUrl: displayedUrl
+                    });
+                } else {
+                    showGlobalToast(failureMessage, 'error');
+                }
                 announceAlert(failureMessage);
             });
         };
@@ -1716,7 +1830,11 @@
      * @returns {HTMLImageElement|undefined}
      */
     function findImageElement(imageUrl) {
-        return Array.from(document.querySelectorAll('img')).find(img => img.src === imageUrl || img.currentSrc === imageUrl);
+        if (imageCorrelation) {
+            return imageCorrelation.findImageElementByUrl(document, imageUrl);
+        }
+        const imgs = Array.from(document.querySelectorAll('img'));
+        return imgs.find(img => img.currentSrc === imageUrl) || imgs.find(img => img.src === imageUrl) || undefined;
     }
 
     /**
@@ -1729,7 +1847,7 @@
     function handleError(imageElement, message) {
         // 再生成時にチャットダイアログが開いている場合、必ず生成中状態から復帰させる
         const chatDialog = getGeminiElement('gemini-alt-dialog');
-        if (chatDialog && chatDialog.dataset.imageSrc === message.imageUrl) {
+        if (correlation.isSameDialogTarget(chatDialog, message)) {
             endChatGeneration(chatDialog);
         }
 
@@ -1744,8 +1862,15 @@
 
         // 画像要素が取得できない場合（DOM外・削除済み等）は画面上部トーストへフォールバック
         const reportStatus = (statusMessage, statusType) => {
-            if (imageElement) showStatus(imageElement, statusMessage, statusType);
-            else showGlobalToast(statusMessage, statusType);
+            if (imageElement) {
+                showStatus(imageElement, statusMessage, statusType, {
+                    requestId: message.requestId,
+                    targetElementId: message.targetElementId,
+                    imageUrl: message.imageUrl
+                });
+            } else {
+                showGlobalToast(statusMessage, statusType);
+            }
         };
 
         // エラー種別の判定 (構造化type優先、フォールバックとしてメッセージ文字列解析)
@@ -1807,14 +1932,28 @@
      * @param {HTMLImageElement} imageElement - 対象画像
      * @param {string} message - 表示メッセージ
      * @param {'loading'|'rate-limit'|'error'|'success'} type - ステータス種別
+     * @param {object} [meta={}] - リクエスト相関メタデータ
      */
-    function showStatus(imageElement, message, type) {
-        const existingStatus = getShadowRoot().querySelector(`.gemini-alt-status[data-image-src="${imageElement.src}"]`);
+    function showStatus(imageElement, message, type, meta = {}) {
+        const displayedUrl = meta.imageUrl || (imageCorrelation
+            ? imageCorrelation.getDisplayedImageUrl(imageElement)
+            : (imageElement.currentSrc || imageElement.src)) || '';
+        const resolvedTargetId = correlation.ensureTargetId(imageElement, meta.targetElementId);
+
+        const existingStatus = correlation.findStatusBadge(getShadowRoot(), {
+            requestId: meta.requestId,
+            targetElementId: resolvedTargetId,
+            element: imageElement,
+            imageUrl: displayedUrl
+        });
         if (existingStatus) existingStatus.remove();
 
         const statusDiv = document.createElement('div');
         statusDiv.className = `gemini-alt-status is-${type}`;
-        statusDiv.setAttribute('data-image-src', imageElement.src);
+        statusDiv._targetElement = imageElement;
+        statusDiv.dataset.imageSrc = displayedUrl;
+        if (meta.requestId) statusDiv.dataset.requestId = meta.requestId;
+        if (resolvedTargetId) statusDiv.dataset.targetElementId = resolvedTargetId;
 
         // アクセシビリティ・ライブリージョン属性の付与
         if (type === 'loading' || type === 'success') {
@@ -2102,13 +2241,12 @@
      */
     async function handleExtractImageFromDom(message, sendResponse) {
         try {
-            let targetElement = null;
-            if (message.targetElementId) {
-                targetElement = document.getElementById(message.targetElementId);
-            }
-            if (!targetElement && message.imageUrl) {
-                targetElement = findImageElement(message.imageUrl);
-            }
+            let targetElement = correlation.resolveTarget({
+                requestId: message.requestId,
+                targetElementId: message.targetElementId,
+                imageUrl: message.imageUrl,
+                fallbackElement: lastRightClickedElement
+            });
             if (!targetElement && lastRightClickedElement) {
                 targetElement = (lastRightClickedElement.tagName === 'SVG' || lastRightClickedElement.closest?.('svg')) ?
                     (lastRightClickedElement.tagName === 'SVG' ? lastRightClickedElement : lastRightClickedElement.closest('svg')) :

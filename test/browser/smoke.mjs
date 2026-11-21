@@ -60,12 +60,27 @@ function makePng(size = 64) {
   ]);
 }
 const PIXEL_PNG = makePng(64);
+const QUOTED_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#2a7"/></svg>';
 const PAGE_HTML = `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><title>Alt Assistant Smoke</title></head>
-<body><h1>Top-level image smoke test</h1><img id="target" src="/pixel.png" alt=""><img id="target-2" src="/pixel-2.png" alt=""></body></html>`;
+<body>
+  <h1>Top-level image smoke test</h1>
+  <img id="target" src="/pixel.png" alt="">
+  <img id="target-2" src="/pixel-2.png" alt="">
+  <div style="margin-top: 120px"><img id="same-1" src="/same.png" alt="" width="64" height="64"></div>
+  <div style="margin-top: 160px"><img id="same-2" src="/same.png" alt="" width="64" height="64"></div>
+  <img id="srcset-target" src="/srcset-fallback.png" srcset="/srcset-displayed.png 1x" alt="" width="64" height="64">
+  <img id="quoted-target" src='data:image/svg+xml;utf8,${QUOTED_SVG}' alt="" width="32" height="32">
+</body></html>`;
 
 const imageServer = http.createServer((req, res) => {
-  if (req.url === '/pixel.png' || req.url === '/pixel-2.png') {
+  if (
+    req.url === '/pixel.png' ||
+    req.url === '/pixel-2.png' ||
+    req.url === '/same.png' ||
+    req.url === '/srcset-fallback.png' ||
+    req.url === '/srcset-displayed.png'
+  ) {
     res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': PIXEL_PNG.length });
     res.end(PIXEL_PNG);
     return;
@@ -77,6 +92,10 @@ await new Promise((resolve) => imageServer.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${imageServer.address().port}`;
 const imageUrl = `${origin}/pixel.png`;
 const imageUrl2 = `${origin}/pixel-2.png`;
+const sameUrl = `${origin}/same.png`;
+const srcsetFallbackUrl = `${origin}/srcset-fallback.png`;
+const srcsetDisplayedUrl = `${origin}/srcset-displayed.png`;
+const quotedUrl = `data:image/svg+xml;utf8,${QUOTED_SVG}`;
 
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alt-smoke-profile-'));
 const debugPort = 19000 + Math.floor(Math.random() * 900);
@@ -229,7 +248,7 @@ try {
   );
 
   await swClient.evaluate(`
-    globalThis.__smoke = { geminiCalls: 0 };
+    globalThis.__smoke = { geminiCalls: 0, fetchedImageUrls: [] };
     const __realFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input.url;
@@ -241,6 +260,9 @@ try {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });
+      }
+      if (url.startsWith(${JSON.stringify(origin)})) {
+        globalThis.__smoke.fetchedImageUrls.push(url);
       }
       return __realFetch(input, init);
     };
@@ -486,6 +508,156 @@ try {
 
   await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
 
+  // --- #05 1: 同一URLの2枚目画像を右クリックし、状態位置・生成・Regenerationが2枚目に紐づく ---
+  await pageClient.evaluate(`(() => {
+    const img2 = document.getElementById('same-2');
+    img2.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+    img2.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+    return true;
+  })()`);
+
+  await swClient.evaluate(
+    `startGenerationProcess(${JSON.stringify(sameUrl)}, ${tabId}, 0, null); 'started-same-2'`
+  );
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-instruction-dialog'); })()`),
+    { label: 'instruction dialog for same-2' }
+  );
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    r.getElementById('gemini-prompt-textarea').value = '2枚目の同じURL画像';
+    r.getElementById('submit-auto-model').click();
+    return true;
+  })()`);
+
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-alt-dialog'); })()`),
+    { label: 'alt dialog for same-2' }
+  );
+
+  // Regeneration で対象要素が変わらず same-2 に維持されること
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const dialog = r.getElementById('gemini-alt-dialog');
+    dialog.querySelector('#gemini-instruction-input').value = '2枚目のまま再生成';
+    dialog.querySelector('.gemini-input-area button').click();
+    return true;
+  })()`);
+
+  await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const dialog = r && r.getElementById('gemini-alt-dialog');
+      const areas = dialog ? [...dialog.querySelectorAll('.chat-bubble-ai textarea')] : [];
+      return areas.length >= 2;
+    })()`),
+    { label: 'regenerated alt text for same-2' }
+  );
+
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const dialog = r.getElementById('gemini-alt-dialog');
+    const applyButtons = [...dialog.querySelectorAll('.gemini-icon-btn.is-apply')];
+    applyButtons[applyButtons.length - 1].click();
+    return true;
+  })()`);
+
+  const sameStatusCheck = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const alt1 = document.getElementById('same-1').getAttribute('alt') || '';
+      const alt2 = document.getElementById('same-2').getAttribute('alt') || '';
+      const r = ${shadow};
+      const badge = r && r.querySelector('.gemini-alt-status.is-success');
+      if (!alt2 || !badge) return null;
+      const rect1 = document.getElementById('same-1').getBoundingClientRect();
+      const rect2 = document.getElementById('same-2').getBoundingClientRect();
+      const badgeTop = parseFloat(badge.style.insetBlockStart);
+      return {
+        alt1,
+        alt2,
+        nearSecond: Math.abs(badgeTop - (rect2.top + window.scrollY - 36)) < Math.abs(badgeTop - (rect1.top + window.scrollY - 36))
+      };
+    })()`),
+    { label: 'applied alt and status position on same-2' }
+  );
+  results.steps.sameUrlSecondImageTargeted =
+    sameStatusCheck.alt1 === '' &&
+    sameStatusCheck.alt2 === '再生成後の代替テキスト' &&
+    sameStatusCheck.nearSecond === true;
+
+  // --- #05 2: srcset 画像で実際に表示中の currentSrc が生成対象になる ---
+  await pageClient.evaluate(`(() => {
+    const srcsetImg = document.getElementById('srcset-target');
+    srcsetImg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+    srcsetImg.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+    return true;
+  })()`);
+
+  await swClient.evaluate(`globalThis.__smoke.fetchedImageUrls = []; true;`);
+  await swClient.evaluate(
+    `startGenerationProcess(${JSON.stringify(srcsetFallbackUrl)}, ${tabId}, 0, null); 'started-srcset'`
+  );
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-instruction-dialog'); })()`),
+    { label: 'instruction dialog for srcset' }
+  );
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    r.getElementById('submit-auto-model').click();
+    return true;
+  })()`);
+  await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const d = r && r.getElementById('gemini-alt-dialog');
+      return d && d.dataset.imageSrc === ${JSON.stringify(srcsetDisplayedUrl)};
+    })()`),
+    { label: 'srcset dialog bound to currentSrc' }
+  );
+  const fetchedForSrcset = await swClient.evaluate(`globalThis.__smoke.fetchedImageUrls`);
+  results.steps.srcsetUsedCurrentSrc =
+    fetchedForSrcset.includes(srcsetDisplayedUrl) && !fetchedForSrcset.includes(srcsetFallbackUrl);
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+
+  // --- #05 3: 引用符を含む URL でも状態表示・結果更新が壊れない ---
+  await swClient.evaluate(`
+    chrome.tabs.sendMessage(${tabId}, {
+      action: 'startAltTextGeneration',
+      imageUrl: ${JSON.stringify(quotedUrl)},
+      targetElementId: 'quoted-target',
+      requestId: 'smoke-quoted-req'
+    }).then(() => true)
+  `, { awaitPromise: true });
+  await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const badge = r && r.querySelector('.gemini-alt-status.is-loading');
+      return badge && badge.dataset.requestId === 'smoke-quoted-req';
+    })()`),
+    { label: 'loading status badge for quoted URL' }
+  );
+  await swClient.evaluate(`
+    chrome.tabs.sendMessage(${tabId}, {
+      action: 'updateAltText',
+      imageUrl: ${JSON.stringify(quotedUrl)},
+      targetElementId: 'quoted-target',
+      requestId: 'smoke-quoted-req',
+      altText: '引用符付きURLの結果',
+      aiProvider: 'Gemini'
+    }).then(() => true)
+  `, { awaitPromise: true });
+  results.steps.quotedUrlHandledSafely = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const d = r && r.getElementById('gemini-alt-dialog');
+      const areas = d ? [...d.querySelectorAll('.chat-bubble-ai textarea')] : [];
+      return areas.length && areas[0].value === '引用符付きURLの結果';
+    })()`),
+    { label: 'alt dialog opened for quoted URL' }
+  );
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+  results.steps.totalGeminiCalls = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+
   if (results.steps.stackedEscapeClosedTopOnly !== true) {
     results.errors.push('Escape closed more than the topmost dialog');
   }
@@ -510,6 +682,15 @@ try {
   if (results.steps.replacedImageResultDelivered !== true) {
     results.errors.push('replacing chat dialog marked the replaced image closed and dropped its next result');
   }
+  if (results.steps.sameUrlSecondImageTargeted !== true) {
+    results.errors.push('same-URL second image was not targeted consistently across status, dialog, and regeneration');
+  }
+  if (results.steps.srcsetUsedCurrentSrc !== true) {
+    results.errors.push('srcset image did not use displayed currentSrc as generation target');
+  }
+  if (results.steps.quotedUrlHandledSafely !== true) {
+    results.errors.push('quoted URL broke status badge or alt dialog handling');
+  }
 
   if (results.steps.firstAltText !== 'スモークテスト用の代替テキスト') {
     results.errors.push(`unexpected first alt text: ${results.steps.firstAltText}`);
@@ -519,6 +700,9 @@ try {
   }
   if (results.steps.geminiCalls !== 2) {
     results.errors.push(`expected 2 Gemini calls, got ${results.steps.geminiCalls}`);
+  }
+  if (results.steps.totalGeminiCalls !== 5) {
+    results.errors.push(`expected 5 total Gemini calls, got ${results.steps.totalGeminiCalls}`);
   }
   if (results.steps.appliedAlt !== '再生成後の代替テキスト') {
     results.errors.push(`unexpected applied alt: ${results.steps.appliedAlt}`);

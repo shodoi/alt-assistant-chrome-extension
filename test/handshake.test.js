@@ -49,7 +49,7 @@ describe('ensureContentScriptReady (シームB: PINGハンドシェイク & 動�
         const mockExecuteScript = async (params) => {
             executeScriptCalled = true;
             assert.deepEqual(params.target, { tabId: 100 });
-            assert.deepEqual(params.files, ['utils/dialog-lifecycle.js', 'content.js']);
+            assert.deepEqual(params.files, ['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'content.js']);
         };
 
         await ensureContentScriptReady(100, 0, {

@@ -62,6 +62,14 @@ function sendTabMessage(tabId, message, options = {}) {
 }
 
 /**
+ * 画像生成リクエストを一意に識別する ID を生成する
+ * @returns {string}
+ */
+function createRequestId() {
+    return `gemini-req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
  * Altテキスト生成の全プロセスを開始するメイン関数。
  * @param {string} imageUrl - 対象の画像URL
  * @param {number} tabId - タブのID
@@ -70,9 +78,13 @@ function sendTabMessage(tabId, message, options = {}) {
  * @param {object} [context={}] - 再生成時の文脈情報
  */
 async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId, context = {}) {
+    const requestId = context.requestId || createRequestId();
+    let effectiveImageUrl = imageUrl;
+    let effectiveTargetElementId = targetElementId || null;
+
     try {
         // 1. 画像URLの安全性・プロトコルバリデーション（javascript:, file: 等の危険/非想定プロトコル遮断。blob: はDOM抽出フォールバックで処理）
-        const urlValidation = validateImageUrl(imageUrl);
+        const urlValidation = validateImageUrl(effectiveImageUrl);
         if (!urlValidation.valid) {
             // エラー表示をWebページUIに届けるため、可能であればContent Scriptの疎通を試みる
             try {
@@ -93,11 +105,19 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
         if (!context.history) {
             userChoice = await chrome.tabs.sendMessage(tabId, {
                 action: "showInstructionDialog",
-                targetElementId: targetElementId,
+                imageUrl: effectiveImageUrl,
+                targetElementId: effectiveTargetElementId,
+                requestId: requestId,
                 frameId: frameId
             }, { frameId: frameId });
             if (userChoice) {
                 finalPrompt = userChoice.prompt;
+                if (userChoice.resolvedImageUrl && validateImageUrl(userChoice.resolvedImageUrl).valid) {
+                    effectiveImageUrl = userChoice.resolvedImageUrl;
+                }
+                if (userChoice.targetElementId) {
+                    effectiveTargetElementId = userChoice.targetElementId;
+                }
             }
         } else {
             // 再生成時 (文脈あり)
@@ -111,17 +131,22 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
         if (userChoice && finalPrompt) {
             // UIに生成開始を通知（タブ消失時も未処理の拒否にしない）
             sendTabMessage(tabId, {
-                action: "startAltTextGeneration", imageUrl, targetElementId, frameId
+                action: "startAltTextGeneration",
+                imageUrl: effectiveImageUrl,
+                targetElementId: effectiveTargetElementId,
+                requestId: requestId,
+                frameId
             }, { frameId });
 
-            const result = await generateAltText(imageUrl, finalPrompt, tabId, frameId, targetElementId);
+            const result = await generateAltText(effectiveImageUrl, finalPrompt, tabId, frameId, effectiveTargetElementId, requestId);
             
             if (result.success) {
                 sendTabMessage(tabId, {
                     action: "updateAltText",
-                    imageUrl,
+                    imageUrl: effectiveImageUrl,
                     altText: result.altText,
-                    targetElementId,
+                    targetElementId: effectiveTargetElementId,
+                    requestId: requestId,
                     frameId,
                     model: GEMINI_MODEL_ID,
                     modelLabel: GEMINI_MODEL_LABEL,
@@ -146,11 +171,12 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
             : null;
         sendTabMessage(tabId, {
             action: "errorAltTextGeneration",
-            imageUrl,
+            imageUrl: effectiveImageUrl,
             errorMessage: errorDetails?.userMessage || error.message,
             errorDetails,
             errorType: errorDetails?.type || 'UNKNOWN',
-            targetElementId,
+            targetElementId: effectiveTargetElementId,
+            requestId: requestId,
             frameId,
             aiProvider: 'Gemini',
             modelLabel: GEMINI_MODEL_LABEL
@@ -186,7 +212,7 @@ function runGenerationProcess(...args) {
  * @param {string} [targetElementId] - 対象要素ID
  * @returns {Promise<{ success: boolean, altText?: string, errorMessage?: string, errorDetails?: object, errorType?: string }>}
  */
-async function generateAltText(imageUrl, promptText, tabId, frameId, targetElementId = null) {
+async function generateAltText(imageUrl, promptText, tabId, frameId, targetElementId = null, requestId = null) {
     try {
         // 画像を一度だけ取得・最適化（SVGラスタライズ & CORSフォールバック対応）
         const preparedImage = await prepareOptimizedImage(imageUrl, tabId, frameId, targetElementId);
@@ -195,6 +221,8 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
         sendTabMessage(tabId, {
             action: "updateModelStatus",
             imageUrl,
+            targetElementId,
+            requestId,
             statusText: `${GEMINI_MODEL_LABEL} で生成中...`
         }, { frameId });
 
@@ -209,6 +237,8 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
                     sendTabMessage(tabId, {
                         action: "updateModelStatus",
                         imageUrl,
+                        targetElementId,
+                        requestId,
                         statusText: `アクセス集中のため再試行中 (${attempt}/3)...`,
                         isRetry: true,
                         attempt
@@ -339,7 +369,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 message.imageUrl, 
                 sender.tab.id, 
                 sender.frameId, 
-                message.targetElementId
+                message.targetElementId,
+                { requestId: message.requestId }
             );
             break;
         case "regenerate_with_context":
@@ -355,7 +386,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 message.targetElementId, 
                 { 
                     history: message.history, 
-                    additionalInstruction: message.additionalInstruction 
+                    additionalInstruction: message.additionalInstruction,
+                    requestId: message.requestId
                 }
             );
             break;
