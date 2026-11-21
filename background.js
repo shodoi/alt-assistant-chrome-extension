@@ -67,6 +67,17 @@ function sendTabMessage(tabId, message, options = {}) {
 }
 
 /**
+ * テストまたは実行時設定からタイムアウトとリトライの上書き設定を取得する
+ * @returns {{ timeouts: object, retryOverrides: object }}
+ */
+function resolveNetworkConfig() {
+    return {
+        timeouts: (typeof globalThis !== 'undefined' && globalThis.__altAssistantTimeouts) || {},
+        retryOverrides: (typeof globalThis !== 'undefined' && globalThis.__altAssistantRetryOverrides) || {}
+    };
+}
+
+/**
  * 画像生成リクエストを一意に識別する ID を生成する
  * @returns {string}
  */
@@ -236,19 +247,30 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
         }, { frameId });
 
         console.log(`Generating alt text with ${GEMINI_MODEL_ID}...`);
+        const { retryOverrides } = resolveNetworkConfig();
+        const maxRetries = retryOverrides.maxRetries ?? 3;
+
         const altText = await generateAltTextWithGemini(
             preparedImage, 
             GEMINI_MODEL_ID, 
             promptText,
             {
+                retryOptions: retryOverrides,
                 onRetry: (err, attempt, delayMs) => {
-                    console.warn(`Gemini API 一時エラー (試行 ${attempt}/3)、${Math.round(delayMs)}ms 後に再試行します:`, err);
+                    console.warn(`Gemini API 一時エラー (試行 ${attempt}/${maxRetries})、${Math.round(delayMs)}ms 後に再試行します:`, err);
+                    const classifiedRetry = typeof classifyApiError === 'function' ? classifyApiError(err) : null;
+                    let retryStatusText = `アクセス集中のため再試行中 (${attempt}/${maxRetries})...`;
+                    if (classifiedRetry?.type === 'TIMEOUT') {
+                        retryStatusText = `通信タイムアウトのため再試行中 (${attempt}/${maxRetries})...`;
+                    } else if (classifiedRetry?.type === 'SERVER_ERROR' || classifiedRetry?.type === 'NETWORK_ERROR') {
+                        retryStatusText = `通信エラーのため再試行中 (${attempt}/${maxRetries})...`;
+                    }
                     sendTabMessage(tabId, {
                         action: "updateModelStatus",
                         imageUrl,
                         targetElementId,
                         requestId,
-                        statusText: `アクセス集中のため再試行中 (${attempt}/3)...`,
+                        statusText: retryStatusText,
                         isRetry: true,
                         attempt
                     }, { frameId });
@@ -513,6 +535,12 @@ async function optimizeImageBlob(originalBlob, maxDimension = MAX_IMAGE_DIMENSIO
  * @returns {Promise<{ base64Image: string, mimeType: string }>} 最適化済み画像データ
  */
 async function prepareOptimizedImage(imageUrl, tabId = null, frameId = 0, targetElementId = null, requestId = null) {
+    const { timeouts: timeoutOverrides, retryOverrides } = resolveNetworkConfig();
+    const defaultImageTimeoutMs = typeof DEFAULT_TIMEOUT_CONFIG !== 'undefined'
+        ? DEFAULT_TIMEOUT_CONFIG.imageFetchMs
+        : 15000;
+    const imageTimeoutMs = timeoutOverrides.imageFetchMs ?? defaultImageTimeoutMs;
+
     if (typeof prepareOptimizedImageWithFallback === 'function') {
         return prepareOptimizedImageWithFallback(imageUrl, {
             tabId,
@@ -520,21 +548,30 @@ async function prepareOptimizedImage(imageUrl, tabId = null, frameId = 0, target
             targetElementId,
             requestId,
             cache: preparedImageCache,
-            optimizeImageBlob
+            optimizeImageBlob,
+            timeoutMs: imageTimeoutMs,
+            retryOptions: retryOverrides
         });
     }
 
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-        throw new Error(`画像の取得に失敗: ${response.status} ${response.statusText}`);
+    const executeFallbackFetch = async (signal) => {
+        const response = await fetch(imageUrl, signal ? { signal } : {});
+        if (!response.ok) {
+            const err = new Error(`画像の取得に失敗: ${response.status} ${response.statusText}`);
+            err.status = response.status;
+            throw err;
+        }
+        const blob = await response.blob();
+        const { blob: optimizedBlob, mimeType } = await optimizeImageBlob(blob);
+        const arrayBuffer = await optimizedBlob.arrayBuffer();
+        const base64Image = bufferToBase64(arrayBuffer);
+        return { base64Image, mimeType };
+    };
+
+    if (typeof runWithTimeout === 'function') {
+        return runWithTimeout(executeFallbackFetch, { timeoutMs: imageTimeoutMs });
     }
-
-    const blob = await response.blob();
-    const { blob: optimizedBlob, mimeType } = await optimizeImageBlob(blob);
-    const arrayBuffer = await optimizedBlob.arrayBuffer();
-    const base64Image = bufferToBase64(arrayBuffer);
-
-    return { base64Image, mimeType };
+    return executeFallbackFetch(null);
 }
 
 /**
@@ -582,44 +619,85 @@ async function generateAltTextWithGemini(imageInput, model, promptText, options 
         }]
     };
 
+    const { timeouts: timeoutOverrides, retryOverrides } = resolveNetworkConfig();
+    const defaultGeminiTimeoutMs = typeof DEFAULT_TIMEOUT_CONFIG !== 'undefined'
+        ? DEFAULT_TIMEOUT_CONFIG.geminiApiMs
+        : 30000;
+    const timeoutMs = options.timeoutMs ?? timeoutOverrides.geminiApiMs ?? defaultGeminiTimeoutMs;
+
     const executeApiRequest = async () => {
-        let apiResponse;
-        try {
-            apiResponse = await fetch(apiUrl, {
+        const executeOnce = async (signal) => {
+            const requestInit = {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': geminiApiKey
+                },
+                body: JSON.stringify(payload),
+                ...(signal ? { signal } : {})
+            };
+
+            let apiResponse;
+            try {
+                apiResponse = await fetch(apiUrl, requestInit);
+            } catch (fetchErr) {
+                // 通信途絶やタイムアウト等の一時的ネットワークエラー
+                console.warn('Gemini API fetch エラー:', fetchErr);
+                throw fetchErr;
+            }
+
+            if (!apiResponse.ok) {
+                const errorData = await apiResponse.json().catch(() => ({}));
+                const rawMessage = errorData.error?.message || apiResponse.statusText || `HTTP ${apiResponse.status}`;
+                const apiError = new Error(rawMessage);
+                apiError.status = apiResponse.status;
+                apiError.details = errorData.error;
+                throw apiError;
+            }
+
+            const data = await apiResponse.json();
+            const altText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (altText) {
+                return altText.trim();
+            }
+            throw new Error("APIからの応答形式が予期しないものでした。");
+        };
+
+        if (typeof runWithTimeout === 'function') {
+            return runWithTimeout(executeOnce, { timeoutMs });
+        }
+        if (typeof fetchWithTimeout === 'function') {
+            const requestInit = {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'x-goog-api-key': geminiApiKey
                 },
                 body: JSON.stringify(payload)
-            });
-        } catch (fetchErr) {
-            // 通信途絶やタイムアウト等の一時的ネットワークエラー
-            console.warn('Gemini API fetch エラー:', fetchErr);
-            throw fetchErr;
+            };
+            const apiResponse = await fetchWithTimeout(apiUrl, requestInit, { timeoutMs });
+            if (!apiResponse.ok) {
+                const errorData = await apiResponse.json().catch(() => ({}));
+                const rawMessage = errorData.error?.message || apiResponse.statusText || `HTTP ${apiResponse.status}`;
+                const apiError = new Error(rawMessage);
+                apiError.status = apiResponse.status;
+                apiError.details = errorData.error;
+                throw apiError;
+            }
+            const data = await apiResponse.json();
+            const altText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (altText) return altText.trim();
+            throw new Error("APIからの応答形式が予期しないものでした。");
         }
-
-        if (!apiResponse.ok) {
-            const errorData = await apiResponse.json().catch(() => ({}));
-            const rawMessage = errorData.error?.message || apiResponse.statusText || `HTTP ${apiResponse.status}`;
-            const apiError = new Error(rawMessage);
-            apiError.status = apiResponse.status;
-            apiError.details = errorData.error;
-            throw apiError;
-        }
-
-        const data = await apiResponse.json();
-        const altText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (altText) {
-            return altText.trim();
-        }
-        throw new Error("APIからの応答形式が予期しないものでした。");
+        return executeOnce(null);
     };
 
     if (typeof retryWithBackoff === 'function') {
         return await retryWithBackoff(executeApiRequest, {
             maxRetries: 3,
             baseDelay: 1000,
+            ...retryOverrides,
+            ...(options.retryOptions || {}),
             onRetry: options.onRetry
         });
     }

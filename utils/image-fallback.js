@@ -17,6 +17,48 @@ if (!imageExtractorModule && typeof self !== 'undefined' && self.AltAssistantIma
     imageExtractorModule = self.AltAssistantImageExtractor;
 }
 
+// retry ユーティリティの依存解決 (Node.js CommonJS / ブラウザ環境)
+let retryModule;
+if (typeof require !== 'undefined') {
+    try {
+        retryModule = require('./retry.js');
+    } catch {
+        // ES Module やバンドル環境
+    }
+}
+if (!retryModule && typeof self !== 'undefined' && self.AltAssistantRetry) {
+    retryModule = self.AltAssistantRetry;
+}
+
+const _retry = retryModule || (typeof self !== 'undefined' ? self.AltAssistantRetry : null) || {};
+const _DEFAULT_TIMEOUT_CONFIG = _retry.DEFAULT_TIMEOUT_CONFIG || (typeof DEFAULT_TIMEOUT_CONFIG !== 'undefined' ? DEFAULT_TIMEOUT_CONFIG : { imageFetchMs: 15000 });
+const _runWithTimeout = _retry.runWithTimeout || (typeof runWithTimeout === 'function'
+    ? runWithTimeout
+    : (op) => op(null));
+const _retryWithBackoff = _retry.retryWithBackoff || (typeof retryWithBackoff === 'function'
+    ? retryWithBackoff
+    : (op) => op());
+
+function shouldRetryImageFetch(error) {
+    if (!error) return false;
+    const status = error.status || error.statusCode;
+    return status === 429 || (typeof status === 'number' && status >= 500 && status < 600);
+}
+
+/**
+ * タイムアウト・5xx など元々のネットワークエラー分類を保持したまま再送出する
+ * @param {Error|null} fetchError
+ */
+function throwPreservedImageFetchError(fetchError) {
+    if (!fetchError) return;
+    if (fetchError.isTimeout || fetchError.name === 'TimeoutError') {
+        throw fetchError;
+    }
+    if (typeof fetchError.status === 'number' && fetchError.status >= 500 && fetchError.status < 600) {
+        throw fetchError;
+    }
+}
+
 // Service Worker (WorkerGlobalScope) 等で既に同名識別子が宣言されている場合の再宣言SyntaxErrorを防ぐため、
 // 個別のトップレベル識別子の再宣言を避け、参照オブジェクト経由で安全に解決する
 const _extractor = imageExtractorModule || (typeof self !== 'undefined' ? self.AltAssistantImageExtractor : null) || {};
@@ -251,13 +293,24 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
     // --- 3. 通常画像URLの取得とCORSフォールバック ---
     let fetchError = null;
     if (fetchFn) {
+        const timeoutMs = options.timeoutMs ?? _DEFAULT_TIMEOUT_CONFIG.imageFetchMs;
+        const retryOptions = options.retryOptions || {};
         try {
-            const response = await fetchFn(trimmedUrl);
-            if (!response.ok) {
-                throw new Error(`画像fetchエラー: HTTP ${response.status} ${response.statusText}`);
-            }
-
-            const blob = await response.blob();
+            const { response, blob } = await _retryWithBackoff(async () => {
+                return _runWithTimeout(async (signal) => {
+                    const res = await fetchFn(trimmedUrl, signal ? { signal } : {});
+                    if (!res.ok) {
+                        const httpError = new Error(`画像fetchエラー: HTTP ${res.status} ${res.statusText || ''}`.trim());
+                        httpError.status = res.status;
+                        throw httpError;
+                    }
+                    const fetchedBlob = await res.blob();
+                    return { response: res, blob: fetchedBlob };
+                }, { timeoutMs });
+            }, {
+                shouldRetry: shouldRetryImageFetch,
+                ...retryOptions
+            });
             if (typeof blob.size === 'number' && blob.size === 0) {
                 throw new Error('画像データが空（0バイト）のため処理できません。');
             }
@@ -368,14 +421,33 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
             throw corsErr;
         }
 
+        throwPreservedImageFetchError(fetchError);
+
         if (domResult.error) {
-            throw new Error(`画像の取得に失敗しました: ${domResult.error}`);
+            const fallbackErr = new Error(`画像の取得に失敗しました: ${domResult.error}`);
+            if (fetchError && typeof fetchError.status === 'number') {
+                fallbackErr.status = fetchError.status;
+                fallbackErr.isImageFetchError = true;
+            }
+            throw fallbackErr;
         }
     }
 
     // フォールバックも不可または失敗した場合の最終エラー
     if (fetchError) {
-        throw new Error(`画像の取得に失敗しました（${fetchError.message}）。認証が必要な画像やCORS制限画像の可能性があります。`);
+        throwPreservedImageFetchError(fetchError);
+        if (fetchError.status === 404) {
+            const notFoundErr = new Error('画像が見つかりませんでした（HTTP 404）。画像のURLまたはページ上の表示をご確認ください。');
+            notFoundErr.status = 404;
+            notFoundErr.isImageFetchError = true;
+            throw notFoundErr;
+        }
+        const finalErr = new Error(`画像の取得に失敗しました（${fetchError.message}）。認証が必要な画像やCORS制限画像の可能性があります。`);
+        if (typeof fetchError.status === 'number') {
+            finalErr.status = fetchError.status;
+            finalErr.isImageFetchError = true;
+        }
+        throw finalErr;
     }
 
     throw new Error('画像の取得に失敗しました。');

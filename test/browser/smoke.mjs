@@ -266,12 +266,22 @@ try {
   );
 
   await swClient.evaluate(`
-    globalThis.__smoke = { geminiCalls: 0, fetchedImageUrls: [] };
+    globalThis.__smoke = { geminiCalls: 0, fetchedImageUrls: [], geminiScriptedResponses: [] };
     const __realFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input.url;
       if (url.includes('generativelanguage.googleapis.com')) {
         globalThis.__smoke.geminiCalls += 1;
+        const scripted = globalThis.__smoke.geminiScriptedResponses.shift();
+        if (scripted) {
+          if (scripted.hang) {
+            return new Promise(() => {});
+          }
+          return new Response(JSON.stringify(scripted.body ?? { error: { message: scripted.message || 'Mock error' } }), {
+            status: scripted.status,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
         const n = globalThis.__smoke.geminiCalls;
         const text = n === 1 ? 'スモークテスト用の代替テキスト' : '再生成後の代替テキスト';
         return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] }), {
@@ -792,6 +802,182 @@ try {
     geminiCallsAfterGif === geminiCallsBeforeGif;
   await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-error-dialog button').click(); return true; })()`);
 
+  // --- #07: ネットワークタイムアウトとリトライ検証 (429->200 / 5xx上限 / 401即時失敗 / タイムアウト復帰 / options検証タイムアウト) ---
+  await swClient.evaluate(`
+    globalThis.__altAssistantTimeouts = { imageFetchMs: 250, geminiApiMs: 250 };
+    globalThis.__altAssistantRetryOverrides = { maxRetries: 2, baseDelay: 20, maxDelay: 50, jitter: false };
+    true;
+  `);
+
+  async function triggerImageGeneration(id, label) {
+    await pageClient.evaluate(`(() => {
+      const img = document.getElementById(${JSON.stringify(id)});
+      img.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+      img.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+      return true;
+    })()`);
+    await swClient.evaluate(`startGenerationProcess(${JSON.stringify(imageUrl)}, ${tabId}, 0, ${JSON.stringify(id)}); 'started'`);
+    await waitFor(
+      () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-instruction-dialog'); })()`),
+      { label: `instruction dialog for ${label}` }
+    );
+    await pageClient.evaluate(`(() => { const r = ${shadow}; r.getElementById('submit-auto-model').click(); return true; })()`);
+  }
+
+  // #07-1: 429 -> 200 で自動再試行して成功する
+  const callsBefore429 = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  await swClient.evaluate(`
+    globalThis.__smoke.geminiScriptedResponses = [
+      { status: 429, message: 'Rate limit exceeded (429)' },
+      { status: 200, body: { candidates: [{ content: { parts: [{ text: '429再試行後に生成されたテキスト' }] } }] } }
+    ];
+    true;
+  `);
+  await triggerImageGeneration('target', '#07 429->200');
+  const textAfter429Retry = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const d = r && r.getElementById('gemini-alt-dialog');
+      const areas = d ? [...d.querySelectorAll('.chat-bubble-ai textarea')] : [];
+      return areas.length ? areas[areas.length - 1].value : null;
+    })()`),
+    { label: 'alt dialog opened after 429->200 retry' }
+  );
+  const callsAfter429 = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  results.steps.retry429Succeeded = textAfter429Retry === '429再試行後に生成されたテキスト' && (callsAfter429 - callsBefore429) === 2;
+
+  // #07-2: チャットからの再生成中にタイムアウトした場合、タイムアウトダイアログが出てチャットUIが復帰する
+  const callsBeforeTimeout = callsAfter429;
+  await swClient.evaluate(`
+    globalThis.__smoke.geminiScriptedResponses = [
+      { hang: true }
+    ];
+    true;
+  `);
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const dialog = r.getElementById('gemini-alt-dialog');
+    dialog.querySelector('#gemini-instruction-input').value = 'タイムアウトテスト';
+    dialog.querySelector('.gemini-input-area button').click();
+    return true;
+  })()`);
+  const timeoutErrorText = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const errDialog = r && r.getElementById('gemini-error-dialog');
+      if (!errDialog) return null;
+      const desc = errDialog.querySelector('.gemini-dialog-description');
+      return desc ? desc.textContent : null;
+    })()`),
+    { label: 'timeout error dialog' }
+  );
+  const chatRecoveredAfterTimeout = await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const d = r.getElementById('gemini-alt-dialog');
+    if (!d) return false;
+    const loading = d.querySelector('.chat-bubble-loading');
+    const input = d.querySelector('#gemini-instruction-input');
+    const sendBtn = d.querySelector('.gemini-icon-btn.is-send');
+    return !loading && Boolean(input && !input.disabled) && Boolean(sendBtn && !sendBtn.disabled);
+  })()`);
+  const callsAfterTimeout = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  results.steps.timeoutRecoveredUi =
+    Boolean(timeoutErrorText && timeoutErrorText.includes('タイムアウト')) &&
+    chatRecoveredAfterTimeout === true &&
+    (callsAfterTimeout - callsBeforeTimeout) === 1;
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-error-dialog button').click(); return true; })()`);
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+
+  // #07-3: 5xx が続く場合は上限回数で停止し分かりやすいサーバーエラーになる
+  const callsBefore5xx = callsAfterTimeout;
+  await swClient.evaluate(`
+    globalThis.__smoke.geminiScriptedResponses = [
+      { status: 503, message: 'Service Unavailable' },
+      { status: 503, message: 'Service Unavailable' },
+      { status: 503, message: 'Service Unavailable' }
+    ];
+    true;
+  `);
+  await triggerImageGeneration('target', '#07 5xx');
+  const server5xxText = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const errDialog = r && r.getElementById('gemini-error-dialog');
+      if (!errDialog) return null;
+      const desc = errDialog.querySelector('.gemini-dialog-description');
+      return desc ? desc.textContent : null;
+    })()`),
+    { label: '5xx server error dialog' }
+  );
+  const callsAfter5xx = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  results.steps.server5xxStoppedAndExplained =
+    Boolean(server5xxText && server5xxText.includes('サーバー') && server5xxText.includes('再度お試し')) &&
+    (callsAfter5xx - callsBefore5xx) === 3;
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-error-dialog button').click(); return true; })()`);
+
+  // #07-4: 401 は再試行せず即時失敗する
+  const callsBefore401 = callsAfter5xx;
+  await swClient.evaluate(`
+    globalThis.__smoke.geminiScriptedResponses = [
+      { status: 401, message: 'API key not valid' }
+    ];
+    true;
+  `);
+  await triggerImageGeneration('target', '#07 401');
+  const auth401Info = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const errDialog = r && r.getElementById('gemini-error-dialog');
+      if (!errDialog) return null;
+      const desc = errDialog.querySelector('.gemini-dialog-description')?.textContent || '';
+      const hasOptionsBtn = [...errDialog.querySelectorAll('button')].some((b) => b.textContent.includes('設定を開く'));
+      return { desc, hasOptionsBtn };
+    })()`),
+    { label: '401 error dialog' }
+  );
+  const callsAfter401 = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  results.steps.auth401ImmediateFailure =
+    Boolean(auth401Info && auth401Info.hasOptionsBtn && auth401Info.desc.includes('APIキー')) &&
+    (callsAfter401 - callsBefore401) === 1;
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-error-dialog .gemini-btn-cancel').click(); return true; })()`);
+
+  // #07-5: options.html の API キー検証にもタイムアウトが適用され UI が復帰する
+  await swClient.evaluate(`chrome.runtime.openOptionsPage(); true;`);
+  const optionsTarget = await waitFor(async () => {
+    const res = await fetch(`http://127.0.0.1:${debugPort}/json/list`);
+    const list = await res.json();
+    return list.find((t) => t.type === 'page' && t.url.includes('options.html')) || null;
+  }, { label: 'options.html target', timeout: 15000 });
+  const optionsClient = await cdp(optionsTarget.webSocketDebuggerUrl, 'options');
+  await waitFor(
+    () => optionsClient.evaluate(`Boolean(document.getElementById('saveButton') && globalThis.AltAssistantRetry)`),
+    { label: 'options page ready' }
+  );
+  await optionsClient.evaluate(`(() => {
+    globalThis.__altAssistantTimeouts = { apiKeyValidationMs: 120 };
+    globalThis.fetch = () => new Promise(() => {});
+    document.getElementById('geminiApiKey').value = 'smoke-timeout-key';
+    document.getElementById('saveButton').click();
+    return true;
+  })()`);
+  const optionsTimeoutState = await waitFor(
+    () => optionsClient.evaluate(`(() => {
+      const btn = document.getElementById('saveButton');
+      const status = document.getElementById('statusMessage');
+      if (!btn || !status) return null;
+      if (btn.disabled || !status.textContent.includes('タイムアウト')) return null;
+      return { disabled: btn.disabled, buttonText: btn.textContent, statusText: status.textContent };
+    })()`),
+    { label: 'options validation timeout recovery' }
+  );
+  results.steps.optionsValidationTimedOut = Boolean(
+    optionsTimeoutState &&
+    optionsTimeoutState.disabled === false &&
+    optionsTimeoutState.buttonText === 'APIキーを保存' &&
+    optionsTimeoutState.statusText.includes('タイムアウト')
+  );
+  optionsClient.ws.close();
+
   results.steps.totalGeminiCalls = await swClient.evaluate('globalThis.__smoke.geminiCalls');
 
   if (results.steps.stackedEscapeClosedTopOnly !== true) {
@@ -839,6 +1025,21 @@ try {
   if (results.steps.unsupportedGifRejected !== true) {
     results.errors.push('unsupported GIF image did not show a clear unsupported-format error');
   }
+  if (results.steps.retry429Succeeded !== true) {
+    results.errors.push('429 -> 200 retry did not succeed');
+  }
+  if (results.steps.timeoutRecoveredUi !== true) {
+    results.errors.push('timeout did not show timeout error or recover chat UI');
+  }
+  if (results.steps.server5xxStoppedAndExplained !== true) {
+    results.errors.push('5xx persisting did not stop at maxRetries with clear server error');
+  }
+  if (results.steps.auth401ImmediateFailure !== true) {
+    results.errors.push('401 error was retried or did not show API key error dialog');
+  }
+  if (results.steps.optionsValidationTimedOut !== true) {
+    results.errors.push('options API key validation did not timeout and recover saveButton');
+  }
 
   if (results.steps.firstAltText !== 'スモークテスト用の代替テキスト') {
     results.errors.push(`unexpected first alt text: ${results.steps.firstAltText}`);
@@ -849,8 +1050,8 @@ try {
   if (results.steps.geminiCalls !== 2) {
     results.errors.push(`expected 2 Gemini calls, got ${results.steps.geminiCalls}`);
   }
-  if (results.steps.totalGeminiCalls !== 7) {
-    results.errors.push(`expected 7 total Gemini calls, got ${results.steps.totalGeminiCalls}`);
+  if (results.steps.totalGeminiCalls !== 14) {
+    results.errors.push(`expected 14 total Gemini calls, got ${results.steps.totalGeminiCalls}`);
   }
   if (results.steps.appliedAlt !== '再生成後の代替テキスト') {
     results.errors.push(`unexpected applied alt: ${results.steps.appliedAlt}`);

@@ -4,10 +4,13 @@ const assert = require('node:assert/strict');
 
 // テスト対象モジュール
 const {
+    DEFAULT_TIMEOUT_CONFIG,
     calculateBackoffDelay,
     isRetryableError,
     classifyApiError,
-    retryWithBackoff
+    retryWithBackoff,
+    runWithTimeout,
+    fetchWithTimeout
 } = require('../utils/retry.js');
 
 describe('シームA: calculateBackoffDelay (指数バックオフ & ジッター計算)', () => {
@@ -54,26 +57,38 @@ describe('シームA: isRetryableError (リトライ対象エラーの判定)', 
         assert.equal(isRetryableError(new Error('Rate limit reached: 429')), true);
     });
 
-    it('HTTP 503 (一時的なサーバー過負荷) をリトライ対象と判定すること', () => {
+    it('HTTP 5xx (500, 502, 503, 504) をリトライ対象と判定すること', () => {
+        assert.equal(isRetryableError({ status: 500, message: 'Internal Server Error' }), true);
+        assert.equal(isRetryableError({ status: 502, message: 'Bad Gateway' }), true);
         assert.equal(isRetryableError({ status: 503, message: 'Service Unavailable' }), true);
+        assert.equal(isRetryableError({ status: 504, message: 'Gateway Timeout' }), true);
         assert.equal(isRetryableError(new Error('503 Service Unavailable')), true);
+        assert.equal(isRetryableError(new Error('HTTP 500 Internal Server Error')), true);
     });
 
-    it('一時的なネットワーク切断 (Failed to fetch, AbortError) をリトライ対象と判定すること', () => {
+    it('一時的なネットワーク切断・中断 (Failed to fetch, AbortError) はリトライ対象、TimeoutError は即時復帰のため非リトライと判定すること', () => {
         assert.equal(isRetryableError(new TypeError('Failed to fetch')), true);
         const abortErr = new Error('The operation was aborted');
         abortErr.name = 'AbortError';
         assert.equal(isRetryableError(abortErr), true);
+
+        const timeoutErr = new Error('リクエストがタイムアウトしました');
+        timeoutErr.name = 'TimeoutError';
+        timeoutErr.isTimeout = true;
+        assert.equal(isRetryableError(timeoutErr), false);
     });
 
-    it('APIキー無効 (401, 403, Invalid API key) はリトライ対象外と判定すること', () => {
+    it('4xx クライアントエラー (400, 401, 403, 404, 422) はメッセージに関わらず再試行対象外と判定すること', () => {
+        assert.equal(isRetryableError({ status: 400, message: 'Bad Request' }), false);
         assert.equal(isRetryableError({ status: 401, message: 'API key not valid' }), false);
         assert.equal(isRetryableError({ status: 403, message: 'Permission Denied' }), false);
+        assert.equal(isRetryableError({ status: 404, message: 'Not Found' }), false);
+        assert.equal(isRetryableError({ status: 422, message: 'Unprocessable Entity' }), false);
+        assert.equal(isRetryableError({ status: 403, message: 'network timeout in error body' }), false);
         assert.equal(isRetryableError(new Error('API key not valid. Please pass a valid API key.')), false);
     });
 
-    it('不正なリクエスト (400) や不明なエラーはリトライ対象外と判定すること', () => {
-        assert.equal(isRetryableError({ status: 400, message: 'Bad Request' }), false);
+    it('不明なエラーはリトライ対象外と判定すること', () => {
         assert.equal(isRetryableError(new Error('Invalid image format')), false);
     });
 });
@@ -125,6 +140,51 @@ describe('シームA: classifyApiError (ユーザー向け日本語エラー分�
         assert.equal(classified.action, 'none');
         assert.match(classified.title, /未対応/);
         assert.match(classified.userMessage, /GIF/);
+    });
+
+    it('5xx サーバーエラー (504 Gateway Timeout 含む) を SERVER_ERROR として分類し、再試行を案内すること', () => {
+        for (const [status, msg] of [[500, 'Internal Server Error'], [504, 'Gateway Timeout']]) {
+            const err = new Error(msg);
+            err.status = status;
+            const classified = classifyApiError(err);
+            assert.equal(classified.type, 'SERVER_ERROR');
+            assert.equal(classified.action, 'retry');
+            assert.equal(classified.status, status);
+            assert.match(classified.userMessage, /サーバー|一時的/);
+            assert.match(classified.userMessage, /再度お試し|再試行/);
+        }
+    });
+
+    it('画像取得エラー (isImageFetchError) を IMAGE_FETCH_ERROR として分類し、APIキーエラーと混同しないこと', () => {
+        const imgErr = new Error('画像が見つかりませんでした（HTTP 403）。');
+        imgErr.status = 403;
+        imgErr.isImageFetchError = true;
+        const classified = classifyApiError(imgErr);
+        assert.equal(classified.type, 'IMAGE_FETCH_ERROR');
+        assert.equal(classified.action, 'none');
+        assert.equal(classified.status, 403);
+    });
+
+    it('タイムアウトエラーを TIMEOUT として分類し、次の行動を案内すること', () => {
+        const timeoutErr = new Error('リクエストがタイムアウトしました（15秒）。');
+        timeoutErr.name = 'TimeoutError';
+        timeoutErr.isTimeout = true;
+        const classified = classifyApiError(timeoutErr);
+        assert.equal(classified.type, 'TIMEOUT');
+        assert.equal(classified.action, 'retry');
+        assert.match(classified.title, /タイムアウト/);
+        assert.match(classified.userMessage, /タイムアウト/);
+        assert.match(classified.userMessage, /確認|再度お試し|再試行/);
+    });
+
+    it('400/404 等の一般 4xx エラーを CLIENT_ERROR として分類すること', () => {
+        const err = new Error('Bad Request');
+        err.status = 400;
+        const classified = classifyApiError(err);
+        assert.equal(classified.type, 'CLIENT_ERROR');
+        assert.equal(classified.action, 'none');
+        assert.equal(classified.status, 400);
+        assert.match(classified.userMessage, /リクエスト|確認/);
     });
 
     it('未知のエラーを UNKNOWN として安全に分類すること', () => {
@@ -241,5 +301,143 @@ describe('シームA: retryWithBackoff (バックオフリトライ実行制御)
         // 1回目の失敗で直ちに中止
         assert.equal(attempts, 1);
         assert.equal(sleepDelays.length, 0);
+    });
+
+    it('5xxエラーが継続した場合、上限回数で停止し最終エラーをスローすること', async () => {
+        let attempts = 0;
+        const sleepDelays = [];
+
+        const operation = async () => {
+            attempts++;
+            const err = new Error('Service Unavailable');
+            err.status = 503;
+            throw err;
+        };
+
+        await assert.rejects(
+            async () => {
+                await retryWithBackoff(operation, {
+                    maxRetries: 3,
+                    baseDelay: 25,
+                    jitter: false,
+                    sleep: async (ms) => { sleepDelays.push(ms); }
+                });
+            },
+            (err) => err.status === 503
+        );
+
+        assert.equal(attempts, 4);
+        assert.deepEqual(sleepDelays, [25, 50, 100]);
+    });
+});
+
+describe('シームA: fetchWithTimeout (ネットワークタイムアウト制御)', () => {
+    it('DEFAULT_TIMEOUT_CONFIG に画像取得・Gemini API・APIキー検証用のタイムアウト定義があること', () => {
+        assert.equal(typeof DEFAULT_TIMEOUT_CONFIG.imageFetchMs, 'number');
+        assert.equal(typeof DEFAULT_TIMEOUT_CONFIG.geminiApiMs, 'number');
+        assert.equal(typeof DEFAULT_TIMEOUT_CONFIG.apiKeyValidationMs, 'number');
+        assert.ok(DEFAULT_TIMEOUT_CONFIG.imageFetchMs > 0);
+        assert.ok(DEFAULT_TIMEOUT_CONFIG.geminiApiMs > 0);
+        assert.ok(DEFAULT_TIMEOUT_CONFIG.apiKeyValidationMs > 0);
+    });
+
+    it('制限時間内に応答が返った場合は通常のレスポンスを返し、AbortSignal を渡すこと', async () => {
+        let receivedSignal = null;
+        const mockFetch = async (url, init) => {
+            receivedSignal = init?.signal || null;
+            return { ok: true, status: 200 };
+        };
+
+        const res = await fetchWithTimeout('https://example.com/api', { method: 'GET' }, {
+            timeoutMs: 500,
+            fetch: mockFetch
+        });
+
+        assert.equal(res.ok, true);
+        assert.ok(receivedSignal, 'AbortSignal が fetch に渡されること');
+        assert.equal(receivedSignal.aborted, false);
+    });
+
+    it('応答が停止した場合にタイムアウトし、signal を中断して TimeoutError を投げること', async () => {
+        let capturedSignal = null;
+        const mockFetch = (url, init) => new Promise((resolve, reject) => {
+            capturedSignal = init?.signal;
+            init?.signal?.addEventListener('abort', () => {
+                const abortErr = new Error('The operation was aborted');
+                abortErr.name = 'AbortError';
+                reject(abortErr);
+            });
+        });
+
+        await assert.rejects(
+            async () => {
+                await fetchWithTimeout('https://example.com/hang', {}, {
+                    timeoutMs: 30,
+                    fetch: mockFetch
+                });
+            },
+            (err) => {
+                assert.equal(err.isTimeout, true);
+                assert.equal(err.name, 'TimeoutError');
+                assert.equal(err.code, 'REQUEST_TIMEOUT');
+                assert.match(err.message, /タイムアウト/);
+                return true;
+            }
+        );
+
+        assert.equal(capturedSignal.aborted, true, 'タイムアウト時に signal が abort されること');
+    });
+
+    it('signal を無視してハングする fetch モックでもタイムアウトして復帰すること', async () => {
+        const neverSettlingFetch = () => new Promise(() => {});
+
+        await assert.rejects(
+            async () => {
+                await fetchWithTimeout('https://example.com/silent-hang', {}, {
+                    timeoutMs: 30,
+                    fetch: neverSettlingFetch
+                });
+            },
+            (err) => err.isTimeout === true && err.name === 'TimeoutError'
+        );
+    });
+
+    it('外部 signal による明示的中断はタイムアウト扱いせずそのまま中断エラーにすること', async () => {
+        const externalController = new AbortController();
+        const mockFetch = (url, init) => new Promise((resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+                const err = new Error('Cancelled by caller');
+                err.name = 'AbortError';
+                reject(err);
+            });
+        });
+
+        setTimeout(() => externalController.abort(), 15);
+
+        await assert.rejects(
+            async () => {
+                await fetchWithTimeout('https://example.com/cancel', { signal: externalController.signal }, {
+                    timeoutMs: 5000,
+                    fetch: mockFetch
+                });
+            },
+            (err) => {
+                assert.notEqual(err.isTimeout, true);
+                assert.equal(err.name, 'AbortError');
+                return true;
+            }
+        );
+    });
+
+    it('runWithTimeout はヘッダ取得後のボディ読み取り停止でもタイムアウトすること', async () => {
+        await assert.rejects(
+            async () => {
+                await runWithTimeout(async () => {
+                    await Promise.resolve();
+                    return new Promise(() => {});
+                }, { timeoutMs: 25 });
+            },
+            (err) => err.isTimeout === true && err.name === 'TimeoutError'
+        );
     });
 });

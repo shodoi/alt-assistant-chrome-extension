@@ -330,3 +330,50 @@ describe('シームB: ネットワーク切断・通信エラー時のダイア�
         assert.match(announcer.assertiveNode.textContent, /インターネット接続を確認/);
     });
 });
+
+describe('シームB: 5xx サーバーエラー・タイムアウト時のダイアログ表示と音声通知', () => {
+    it('5xx サーバーエラー上限到達時に分かりやすい案内と次の行動が表示されること', async () => {
+        const announcerContainer = createMockElement('div');
+        const announcer = createAnnouncer(announcerContainer);
+
+        const serverErr = Object.assign(new Error('Service Unavailable'), { status: 503 });
+        const classified = classifyApiError(serverErr);
+
+        announceAlert(classified.userMessage, announcer);
+        const { title, desc, closeBtn } = renderErrorDialog(classified);
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        assert.equal(classified.type, 'SERVER_ERROR');
+        assert.match(title.textContent, /サーバー/);
+        assert.match(desc.textContent, /しばらく待ってから再度お試しください/);
+        assert.equal(mockDocument.activeElement, closeBtn);
+        assert.match(announcer.assertiveNode.textContent, /一時的なエラー/);
+    });
+
+    it('タイムアウト発生時にタイムアウト案内が表示され、UIが操作可能に復帰すること', async () => {
+        const imageElement = createMockElement('img', { src: 'https://example.com/slow.jpg' });
+        mockDocument.activeElement = imageElement;
+
+        const timeoutErr = Object.assign(new Error('リクエストがタイムアウトしました（15秒）。'), {
+            name: 'TimeoutError',
+            isTimeout: true
+        });
+        const classified = classifyApiError(timeoutErr);
+
+        const { title, desc, closeBtn } = renderErrorDialog(classified, {
+            restoreElement: imageElement
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        assert.equal(classified.type, 'TIMEOUT');
+        assert.match(title.textContent, /タイムアウト/);
+        assert.match(desc.textContent, /タイムアウト/);
+        assert.match(desc.textContent, /ネットワーク接続を確認/);
+
+        closeBtn.click();
+        assert.equal(shadowRoot.querySelector('#gemini-error-dialog'), null);
+        assert.equal(mockDocument.activeElement, imageElement);
+    });
+});

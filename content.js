@@ -797,8 +797,8 @@
                             imageUrl: message.imageUrl
                         });
                     } else {
-                        // チャットダイアログ内でもリトライ進捗をリアルタイム表示
-                        const loadingBubbleText = dialog.querySelector('.chat-bubble-loading span');
+                        // チャットダイアログ内でもリトライ進捗をリアルタイム表示（スピナー要素を上書きしない）
+                        const loadingBubbleText = dialog.querySelector('.chat-bubble-loading .gemini-loading-text, .chat-bubble-loading span:not(.gemini-spinner)');
                         if (loadingBubbleText && message.statusText) {
                             loadingBubbleText.textContent = message.statusText;
                         }
@@ -1713,6 +1713,7 @@
             spinner.className = 'gemini-spinner';
             bubble.appendChild(spinner);
             const textSpan = document.createElement('span');
+            textSpan.className = 'gemini-loading-text';
             textSpan.textContent = text;
             bubble.appendChild(textSpan);
             wrapper.appendChild(bubble);
@@ -1860,7 +1861,7 @@
         const dialogDetails = { ...(errorDetails || {}), userMessage: userMsg, modelLabel, aiProvider: provider };
         const modelSuffix = modelLabel ? ` (${modelLabel})` : '';
 
-        // 画像要素が取得できない場合（DOM外・削除済み等）は画面上部トーストへフォールバック
+        // 画像要素が取得できない場合（DOM外・削除済み等）は孤立したローディングバッジを除去し画面上部トーストへフォールバック
         const reportStatus = (statusMessage, statusType) => {
             if (imageElement) {
                 showStatus(imageElement, statusMessage, statusType, {
@@ -1869,36 +1870,50 @@
                     imageUrl: message.imageUrl
                 });
             } else {
+                const orphanedStatus = correlation.findStatusBadge(getShadowRoot(), {
+                    requestId: message.requestId,
+                    targetElementId: message.targetElementId,
+                    imageUrl: message.imageUrl
+                });
+                if (orphanedStatus) orphanedStatus.remove();
                 showGlobalToast(statusMessage, statusType);
             }
         };
 
-        // エラー種別の判定 (構造化type優先、フォールバックとしてメッセージ文字列解析)
-        const isRateLimit = errorType === 'RATE_LIMIT' ||
+        // エラー種別の判定 (構造化type優先、未分類/未指定時のみメッセージ文字列解析へフォールバック)
+        const hasExplicitType = Boolean(errorType && errorType !== 'UNKNOWN');
+        const isRateLimit = errorType === 'RATE_LIMIT' || (!hasExplicitType && (
             userMsg.includes('429') ||
             userMsg.includes('rate limit') ||
             userMsg.includes('quota exceeded') ||
             userMsg.includes('利用制限') ||
             userMsg.includes('レート制限') ||
-            userMsg.includes('Resource has been exhausted');
+            userMsg.includes('Resource has been exhausted')
+        ));
 
-        const isApiKeyError = errorType === 'API_KEY_INVALID' ||
+        const isApiKeyError = errorType === 'API_KEY_INVALID' || (!hasExplicitType && (
             userMsg.includes('API key') ||
             userMsg.includes('APIキー') ||
             userMsg.includes('Invalid API key') ||
             userMsg.includes('401') ||
-            userMsg.includes('403');
+            userMsg.includes('403')
+        ));
 
-        const isNetworkError = errorType === 'NETWORK_ERROR' ||
+        const isTimeoutError = errorType === 'TIMEOUT';
+        const isServerError = errorType === 'SERVER_ERROR';
+
+        const isNetworkError = errorType === 'NETWORK_ERROR' || (!hasExplicitType && (
             userMsg.includes('Failed to fetch') ||
             userMsg.includes('ネットワーク') ||
-            userMsg.includes('通信');
+            userMsg.includes('通信')
+        ));
 
         const isCorsBlocked = errorType === 'CORS_RESTRICTED' ||
-            message.isCorsBlocked ||
+            message.isCorsBlocked || (!hasExplicitType && (
             userMsg.includes('CORS') ||
             userMsg.includes('セキュリティ制限') ||
-            userMsg.includes('クロスオリジン');
+            userMsg.includes('クロスオリジン')
+        ));
 
         if (isRateLimit) {
             showRateLimitDialog(dialogDetails);
@@ -1907,6 +1922,14 @@
         } else if (isApiKeyError) {
             showApiKeyErrorDialog(dialogDetails);
             reportStatus(`${provider}のAPIキーエラー${modelSuffix}`, 'error');
+            announceAlert(userMsg);
+        } else if (isTimeoutError) {
+            showNetworkErrorDialog(dialogDetails);
+            reportStatus(`通信タイムアウト${modelSuffix}`, 'error');
+            announceAlert(userMsg);
+        } else if (isServerError) {
+            showNetworkErrorDialog(dialogDetails);
+            reportStatus(`サーバーエラー${modelSuffix}`, 'error');
             announceAlert(userMsg);
         } else if (isNetworkError) {
             showNetworkErrorDialog(dialogDetails);
@@ -2347,10 +2370,10 @@
         }
 
         // 2. <img> または Image 要素の場合: Canvas に描画して Base64 出力
-        if (element.complete === true && element.naturalWidth === 0) {
+        if (element.complete === false || (element.complete === true && element.naturalWidth === 0)) {
             return {
                 success: false,
-                error: '画像の読み込みに失敗したか、画像データが利用できません（blob URLの失効や破損の可能性があります）。'
+                error: '画像の読み込みが完了していないか、画像データが利用できません（blob URLの失効や破損の可能性があります）。'
             };
         }
 

@@ -293,4 +293,169 @@ test('シームB: prepareOptimizedImageWithFallback (SVG・CORSフォールバ�
         assert.equal(fetchCount, 2);
         assert.equal(optimizeCount, 2);
     });
+
+    await t.test('9. 画像fetchで429→200となった場合、指数バックオフで自動再試行して成功すること', async () => {
+        let fetchCount = 0;
+        const sleepDelays = [];
+
+        const mockFetch = async () => {
+            fetchCount += 1;
+            if (fetchCount === 1) {
+                return {
+                    ok: false,
+                    status: 429,
+                    statusText: 'Too Many Requests'
+                };
+            }
+            return {
+                ok: true,
+                status: 200,
+                blob: async () => ({
+                    type: 'image/png',
+                    size: 1024,
+                    arrayBuffer: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).buffer
+                })
+            };
+        };
+
+        const result = await prepareOptimizedImageWithFallback('https://example.com/retry-image.png', {
+            fetch: mockFetch,
+            retryOptions: {
+                maxRetries: 3,
+                baseDelay: 20,
+                jitter: false,
+                sleep: async (ms) => { sleepDelays.push(ms); }
+            }
+        });
+
+        assert.equal(fetchCount, 2);
+        assert.deepEqual(sleepDelays, [20]);
+        assert.equal(result.mimeType, 'image/png');
+    });
+
+    await t.test('10. 画像fetchで5xxが続く場合、上限回数で停止し status を保持したエラーを投げること', async () => {
+        let fetchCount = 0;
+        const sleepDelays = [];
+
+        const mockFetch = async () => {
+            fetchCount += 1;
+            return {
+                ok: false,
+                status: 503,
+                statusText: 'Service Unavailable'
+            };
+        };
+
+        await assert.rejects(
+            async () => {
+                await prepareOptimizedImageWithFallback('https://example.com/unavailable.png', {
+                    fetch: mockFetch,
+                    retryOptions: {
+                        maxRetries: 2,
+                        baseDelay: 10,
+                        jitter: false,
+                        sleep: async (ms) => { sleepDelays.push(ms); }
+                    }
+                });
+            },
+            (err) => {
+                assert.equal(err.status, 503);
+                assert.match(err.message, /503/);
+                return true;
+            }
+        );
+
+        assert.equal(fetchCount, 3);
+        assert.deepEqual(sleepDelays, [10, 20]);
+    });
+
+    await t.test('11. 画像fetchで403/404等の4xxが返った場合は再試行せず即時フォールバックまたは失敗すること', async () => {
+        let fetchCount = 0;
+        let domFallbackCalled = false;
+
+        const mockFetch = async () => {
+            fetchCount += 1;
+            return {
+                ok: false,
+                status: 403,
+                statusText: 'Forbidden'
+            };
+        };
+
+        const mockSendMessage = async () => {
+            domFallbackCalled = true;
+            return { success: false, isCorsBlocked: true, error: 'CORS blocked' };
+        };
+
+        await assert.rejects(
+            async () => {
+                await prepareOptimizedImageWithFallback('https://example.com/forbidden.png', {
+                    fetch: mockFetch,
+                    sendMessage: mockSendMessage,
+                    tabId: 301,
+                    frameId: 0,
+                    retryOptions: {
+                        maxRetries: 3,
+                        baseDelay: 10,
+                        sleep: async () => {
+                            throw new Error('4xx で sleep が呼ばれてはならない');
+                        }
+                    }
+                });
+            },
+            (err) => err.isCorsBlocked === true
+        );
+
+        assert.equal(fetchCount, 1, '403 では再試行せず1回のみ fetch すること');
+        assert.equal(domFallbackCalled, true, 'DOM フォールバックが即座に呼ばれること');
+    });
+
+    await t.test('12. 画像fetchが応答停止した場合はタイムアウトし、TimeoutError を保持して失敗すること', async () => {
+        const hangingFetch = () => new Promise(() => {});
+
+        await assert.rejects(
+            async () => {
+                await prepareOptimizedImageWithFallback('https://example.com/slow-image.png', {
+                    fetch: hangingFetch,
+                    timeoutMs: 30
+                });
+            },
+            (err) => {
+                assert.equal(err.isTimeout, true);
+                assert.equal(err.name, 'TimeoutError');
+                assert.match(err.message, /タイムアウト/);
+                return true;
+            }
+        );
+    });
+
+    await t.test('13. レスポンスヘッダ後の blob() 読み取りが停止した場合もタイムアウトすること', async () => {
+        const hangingBlobFetch = async () => ({
+            ok: true,
+            status: 200,
+            headers: new Headers({ 'content-type': 'image/png' }),
+            blob: () => new Promise(() => {})
+        });
+
+        await assert.rejects(
+            async () => {
+                await prepareOptimizedImageWithFallback('https://example.com/slow-body.png', {
+                    fetch: hangingBlobFetch,
+                    timeoutMs: 30
+                });
+            },
+            (err) => err.isTimeout === true && err.name === 'TimeoutError'
+        );
+    });
+
+    await t.test('14. 画像fetchの403でDOMフォールバックも不可な場合は status と isImageFetchError を保持すること', async () => {
+        await assert.rejects(
+            async () => {
+                await prepareOptimizedImageWithFallback('https://example.com/no-tab-403.png', {
+                    fetch: async () => ({ ok: false, status: 403, statusText: 'Forbidden' })
+                });
+            },
+            (err) => err.status === 403 && err.isImageFetchError === true
+        );
+    });
 });

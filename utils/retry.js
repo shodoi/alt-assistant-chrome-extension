@@ -28,6 +28,20 @@ const DEFAULT_RETRY_CONFIG = {
 };
 
 /**
+ * ネットワーク処理種別ごとのタイムアウト設定 (ms)
+ */
+const DEFAULT_TIMEOUT_CONFIG = {
+    /** 画像取得 fetch タイムアウト (15秒) */
+    imageFetchMs: 15000,
+    /** Gemini API generateContent 呼び出しタイムアウト (30秒) */
+    geminiApiMs: 30000,
+    /** オプション画面の API キー検証タイムアウト (10秒) */
+    apiKeyValidationMs: 10000,
+    /** 汎用デフォルトタイムアウト (15秒) */
+    defaultMs: 15000,
+};
+
+/**
  * 指数バックオフ＋ジッター待機時間を計算する
  *
  * 連続リクエストによるサンダリング・ハード（Thundering Herd 問題: 全クライアントが一斉に同時再試行して
@@ -82,6 +96,12 @@ function isRetryableError(error) {
 
     // 1. クォータ超過・レート制限 (HTTP 429)
     if (status === 429) return true;
+
+    // 2. 429 以外の 4xx クライアントエラー (400, 401, 403, 404 等) は再試行せず即時失敗
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+        return false;
+    }
+
     if (
         message.includes('429') ||
         message.includes('rate limit') ||
@@ -93,15 +113,28 @@ function isRetryableError(error) {
         return true;
     }
 
-    // 2. サーバー側の一時的不調 (HTTP 503 / 502 / 504)
-    if (status === 503 || status === 502 || status === 504) return true;
-    if (message.includes('503') || message.includes('service unavailable')) {
+    // 3. サーバー側の一時的不調 (HTTP 5xx: 500〜599)
+    if (typeof status === 'number' && status >= 500 && status < 600) return true;
+    if (
+        /\b50[0234]\b/.test(message) ||
+        message.includes('internal server error') ||
+        message.includes('bad gateway') ||
+        message.includes('service unavailable') ||
+        message.includes('gateway timeout')
+    ) {
         return true;
     }
 
-    // 3. ネットワーク障害・タイムアウト (TypeError: Failed to fetch, AbortError 等)
-    if (error.name === 'AbortError' || message.includes('aborted')) return true;
-    if (message.includes('failed to fetch') || message.includes('network') || message.includes('timeout')) {
+    // 4. タイムアウトは 1 回の長時間待機で即座に UI を復帰させるため自動再試行しない
+    if (error.isTimeout === true || error.name === 'TimeoutError') {
+        return false;
+    }
+
+    // 5. 一時的なネットワーク障害・中断 (TypeError: Failed to fetch, AbortError 等)
+    if (error.name === 'AbortError' || message.includes('aborted')) {
+        return true;
+    }
+    if (message.includes('failed to fetch') || message.includes('network')) {
         // APIキーエラーを含むメッセージでなければ一時的ネットワーク不調とみなす
         if (!message.includes('api key') && !message.includes('apikey')) {
             return true;
@@ -112,7 +145,7 @@ function isRetryableError(error) {
 }
 
 /**
- * @typedef {'RATE_LIMIT' | 'API_KEY_INVALID' | 'NETWORK_ERROR' | 'CONTENT_POLICY' | 'CORS_RESTRICTED' | 'UNSUPPORTED_IMAGE_FORMAT' | 'UNKNOWN'} ErrorCategory
+ * @typedef {'RATE_LIMIT' | 'API_KEY_INVALID' | 'SERVER_ERROR' | 'TIMEOUT' | 'NETWORK_ERROR' | 'CLIENT_ERROR' | 'IMAGE_FETCH_ERROR' | 'CONTENT_POLICY' | 'CORS_RESTRICTED' | 'UNSUPPORTED_IMAGE_FORMAT' | 'UNKNOWN'} ErrorCategory
  *
  * @typedef {object} ClassifiedError
  * @property {ErrorCategory} type - エラー分類コード
@@ -135,7 +168,7 @@ function isRetryableError(error) {
 function classifyApiError(error) {
     const rawMessage = error ? (error.message || String(error)) : '不明なエラー';
     const messageLower = rawMessage.toLowerCase();
-    const status = (error && (error.status || error.statusCode)) || null;
+    const status = (error && (error.status || error.statusCode || (error.response && error.response.status))) || null;
 
     // 1. レート制限 / クォータ超過 (Rate Limit / Quota Exceeded)
     if (
@@ -157,7 +190,19 @@ function classifyApiError(error) {
         };
     }
 
-    // 2. APIキー未設定または無効 (Authentication / Authorization Error)
+    // 2. 画像取得エラー（Webサイトの401/403/404等でAPIキーエラーと区別するため先に判定）
+    if (error?.isImageFetchError) {
+        return {
+            type: 'IMAGE_FETCH_ERROR',
+            title: '🖼️ 画像を取得できませんでした',
+            userMessage: rawMessage,
+            action: 'none',
+            status: status || 400,
+            rawMessage
+        };
+    }
+
+    // 3. APIキー未設定または無効 (Authentication / Authorization Error)
     if (
         status === 401 ||
         status === 403 ||
@@ -178,7 +223,7 @@ function classifyApiError(error) {
         };
     }
 
-    // 3. 安全基準フィルター違反 (Safety Filter / Policy Blocked)
+    // 4. 安全基準フィルター違反 (Safety Filter / Policy Blocked)
     if (
         messageLower.includes('safety') ||
         messageLower.includes('blocked') ||
@@ -195,13 +240,59 @@ function classifyApiError(error) {
         };
     }
 
-    // 4. ネットワーク切断・タイムアウト (Network Error / Timeout)
+    // 5. 明示的なタイムアウト (TimeoutError / isTimeout)
+    if (error?.isTimeout === true || error?.name === 'TimeoutError') {
+        return {
+            type: 'TIMEOUT',
+            title: '⏱️ 通信がタイムアウトしました',
+            userMessage: 'サーバーからの応答が時間内に返らずタイムアウトしました。しばらく待つか、ネットワーク接続を確認して再度お試しください。',
+            action: 'retry',
+            status: status || 408,
+            rawMessage
+        };
+    }
+
+    // 6. 5xx サーバーエラー (504 Gateway Timeout 等が timeout 文字列で誤分類されないよう先に判定)
+    if (
+        (typeof status === 'number' && status >= 500 && status < 600) ||
+        /\b50[0234]\b/.test(messageLower) ||
+        messageLower.includes('internal server error') ||
+        messageLower.includes('bad gateway') ||
+        messageLower.includes('service unavailable') ||
+        messageLower.includes('gateway timeout')
+    ) {
+        return {
+            type: 'SERVER_ERROR',
+            title: '🛠️ サーバー側で一時的なエラーが発生しました',
+            userMessage: 'サーバー側で一時的なエラーが発生したため処理を完了できませんでした。しばらく待ってから再度お試しください。',
+            action: 'retry',
+            status: status || 503,
+            rawMessage
+        };
+    }
+
+    // 7. タイムアウト関連メッセージ (ステータスコードなしの文字列エラー向けフォールバック)
+    if (
+        messageLower.includes('タイムアウト') ||
+        messageLower.includes('timed out') ||
+        messageLower.includes('timeout')
+    ) {
+        return {
+            type: 'TIMEOUT',
+            title: '⏱️ 通信がタイムアウトしました',
+            userMessage: 'サーバーからの応答が時間内に返らずタイムアウトしました。しばらく待つか、ネットワーク接続を確認して再度お試しください。',
+            action: 'retry',
+            status: status || 408,
+            rawMessage
+        };
+    }
+
+    // 8. ネットワーク切断 (Network Error)
     if (
         error?.name === 'AbortError' ||
         error?.name === 'TypeError' ||
         messageLower.includes('failed to fetch') ||
         messageLower.includes('network') ||
-        messageLower.includes('timeout') ||
         messageLower.includes('enetunreach') ||
         messageLower.includes('connection refused')
     ) {
@@ -215,7 +306,7 @@ function classifyApiError(error) {
         };
     }
 
-    // 5. 未対応の画像形式・非画像コンテンツ (Unsupported Image Format)
+    // 7. 未対応の画像形式・非画像コンテンツ (Unsupported Image Format)
     if (
         error?.isUnsupportedFormat ||
         error?.code === 'UNSUPPORTED_IMAGE_FORMAT' ||
@@ -233,7 +324,7 @@ function classifyApiError(error) {
         };
     }
 
-    // 6. CORS / セキュリティ制限による画像取得失敗 (CORS / Cross-Origin Restriction)
+    // 8. CORS / セキュリティ制限による画像取得失敗 (CORS / Cross-Origin Restriction)
     if (
         error?.isCorsBlocked ||
         messageLower.includes('cors') ||
@@ -251,7 +342,19 @@ function classifyApiError(error) {
         };
     }
 
-    // 6. その他の予期せぬエラー (Unknown Error)
+    // 9. その他の 4xx クライアントエラー
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+        return {
+            type: 'CLIENT_ERROR',
+            title: '⚠️ リクエストを処理できませんでした',
+            userMessage: `リクエスト内容または対象リソースに問題があるため処理できませんでした（HTTP ${status}）。画像や指示内容を確認して再度お試しください。`,
+            action: 'none',
+            status,
+            rawMessage
+        };
+    }
+
+    // 10. その他の予期せぬエラー (Unknown Error)
     return {
         type: 'UNKNOWN',
         title: '⚠️ エラーが発生しました',
@@ -315,13 +418,154 @@ async function retryWithBackoff(operation, options = {}) {
     }
 }
 
+/**
+ * タイムアウトを表す構造化 Error オブジェクトを生成する
+ *
+ * @param {number} timeoutMs - タイムアウト時間 (ms)
+ * @returns {Error}
+ */
+function createTimeoutError(timeoutMs) {
+    const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+    const err = new Error(`リクエストがタイムアウトしました（${seconds}秒）。`);
+    err.name = 'TimeoutError';
+    err.code = 'REQUEST_TIMEOUT';
+    err.isTimeout = true;
+    err.timeoutMs = timeoutMs;
+    return err;
+}
+
+/**
+ * 任意の非同期処理（fetch + ボディ読み取りなど一連の処理）にタイムアウトと AbortSignal を適用する
+ *
+ * @template T
+ * @param {(signal: AbortSignal|null) => Promise<T>} operation - signal を受け取る非同期処理
+ * @param {object} [options={}]
+ * @param {number} [options.timeoutMs=DEFAULT_TIMEOUT_CONFIG.defaultMs] - タイムアウト時間 (ms)
+ * @param {AbortSignal} [options.signal] - 外部キャンセル用 AbortSignal
+ * @returns {Promise<T>}
+ */
+async function runWithTimeout(operation, options = {}) {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_CONFIG.defaultMs;
+    const externalSignal = options.signal || null;
+
+    if (externalSignal && externalSignal.aborted) {
+        const abortErr = externalSignal.reason instanceof Error
+            ? externalSignal.reason
+            : Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+        throw abortErr;
+    }
+
+    if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        return operation(externalSignal);
+    }
+
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    let onExternalAbort = null;
+    if (controller && externalSignal && typeof externalSignal.addEventListener === 'function') {
+        onExternalAbort = () => {
+            try {
+                controller.abort(externalSignal.reason);
+            } catch {
+                controller.abort();
+            }
+        };
+        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+
+    let timerId = null;
+    let didTimeout = false;
+
+    const timeoutPromise = new Promise((_, reject) => {
+        timerId = setTimeout(() => {
+            didTimeout = true;
+            const timeoutErr = createTimeoutError(timeoutMs);
+            if (controller) {
+                try {
+                    controller.abort(timeoutErr);
+                } catch {
+                    controller.abort();
+                }
+            }
+            reject(timeoutErr);
+        }, timeoutMs);
+    });
+
+    const opPromise = Promise.resolve().then(() => operation(controller ? controller.signal : externalSignal));
+    opPromise.catch(() => {});
+
+    try {
+        return await Promise.race([opPromise, timeoutPromise]);
+    } catch (err) {
+        if (didTimeout) {
+            throw createTimeoutError(timeoutMs);
+        }
+        throw err;
+    } finally {
+        if (timerId !== null) {
+            clearTimeout(timerId);
+        }
+        if (externalSignal && onExternalAbort && typeof externalSignal.removeEventListener === 'function') {
+            externalSignal.removeEventListener('abort', onExternalAbort);
+        }
+    }
+}
+
+/**
+ * タイムアウト付きで fetch を実行する
+ *
+ * 指定時間内に応答が返らない場合、AbortController でリクエストを中断し、
+ * `isTimeout: true`, `name: 'TimeoutError'` を持つエラーを投げる。
+ *
+ * @param {string} url - リクエスト URL
+ * @param {RequestInit} [fetchOptions={}] - fetch オプション
+ * @param {object} [timeoutOptions={}] - タイムアウト設定
+ * @param {number} [timeoutOptions.timeoutMs=DEFAULT_TIMEOUT_CONFIG.defaultMs] - タイムアウト (ms)
+ * @param {Function} [timeoutOptions.fetch] - カスタム fetch (テストDI用)
+ * @returns {Promise<Response>}
+ */
+async function fetchWithTimeout(url, fetchOptions = {}, timeoutOptions = {}) {
+    const fetchFn = timeoutOptions.fetch || (typeof fetch === 'function' ? fetch : null);
+    if (typeof fetchFn !== 'function') {
+        throw new Error('fetch が利用できません。');
+    }
+
+    return runWithTimeout((signal) => {
+        const requestInit = signal
+            ? { ...fetchOptions, signal }
+            : fetchOptions;
+        return fetchFn(url, requestInit);
+    }, {
+        timeoutMs: timeoutOptions.timeoutMs ?? DEFAULT_TIMEOUT_CONFIG.defaultMs,
+        signal: fetchOptions && fetchOptions.signal ? fetchOptions.signal : null
+    });
+}
+
 // CommonJS (Node.js テスト用) とブラウザ環境の互換性サポート
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         DEFAULT_RETRY_CONFIG,
+        DEFAULT_TIMEOUT_CONFIG,
         calculateBackoffDelay,
         isRetryableError,
         classifyApiError,
-        retryWithBackoff
+        retryWithBackoff,
+        createTimeoutError,
+        runWithTimeout,
+        fetchWithTimeout
+    };
+}
+
+// ブラウザ / Service Worker グローバル公開 (options.js 等から参照可能にする)
+if (typeof globalThis !== 'undefined') {
+    globalThis.AltAssistantRetry = {
+        DEFAULT_RETRY_CONFIG,
+        DEFAULT_TIMEOUT_CONFIG,
+        calculateBackoffDelay,
+        isRetryableError,
+        classifyApiError,
+        retryWithBackoff,
+        createTimeoutError,
+        runWithTimeout,
+        fetchWithTimeout
     };
 }
