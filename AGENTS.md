@@ -6,9 +6,15 @@ Work from `.scratch/alt-assistant-fixes/issues/` (local, gitignored). Each `NN-*
 
 ## Checks
 
-- Tests: `node --test "test/**/*.test.js"`
-- Syntax: `node --check` on every tracked `.js` / `.mjs`
-- CI: `.github/workflows/ci.yml` runs both on push and pull request.
+- All-in-one check: `node test/check.mjs` (runs `node --check` on every tracked `.js`/`.mjs` and `node --test "test/**/*.test.js"`)
+- PowerShell UTF-8 output (prevents Japanese garbling): `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; node test/check.mjs`
+- CI: `.github/workflows/ci.yml` runs `node test/check.mjs`, Conventional Commits check, and `browser-smoke` (Edge on `windows-latest`) on push and pull request.
+
+## Runtime loading
+
+`utils/handshake.js` injects `['utils/dialog-lifecycle.js', 'content.js']` into the page.
+`utils/*.js` not in that list run only in `background.js` (`importScripts`) or in tests.
+`test/runtime-wiring.test.js` enforces that any `window.AltAssistant*` referenced in `content.js` is in that injection list.
 
 ## Browser verification
 
@@ -22,6 +28,6 @@ Load the unpacked extension with Edge 157+ and run the smoke harness. See `BROWS
 - Shadow DOM: `getShadowRoot`, `getGeminiElement`
 - A11y / live regions: `announceStatus`, `announceAlert`, `announceSuccess`, `attachDialogAccessibility`
 - Background messages: `chrome.runtime.onMessage` listener
-- Dialogs: `showInstructionDialog`, `showAltTextDialog`, `addMessageToChat`
+- Dialogs: `showInstructionDialog, showAltTextDialog, addMessageToChat` (close via `closeDialogElement` / dialog stack)
 - Errors: `showRateLimitDialog`, `showApiKeyErrorDialog`, `showNetworkErrorDialog`, `showGeneralErrorDialog`
 - Images / status: `handleExtractImageFromDom`, `findImageElement`, `showStatus`

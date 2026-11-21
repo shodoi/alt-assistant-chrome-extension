@@ -10,11 +10,12 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 const edgePath = process.argv[2];
-const extPath = process.argv[3];
-if (!edgePath || !extPath) {
+const rawExtPath = process.argv[3];
+if (!edgePath || !rawExtPath) {
   console.error('usage: node test/browser/smoke.mjs <edge.exe> <extension-dir>');
   process.exit(2);
 }
+const extPath = path.resolve(rawExtPath);
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -61,10 +62,10 @@ function makePng(size = 64) {
 const PIXEL_PNG = makePng(64);
 const PAGE_HTML = `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><title>Alt Assistant Smoke</title></head>
-<body><h1>Top-level image smoke test</h1><img id="target" src="/pixel.png" alt=""></body></html>`;
+<body><h1>Top-level image smoke test</h1><img id="target" src="/pixel.png" alt=""><img id="target-2" src="/pixel-2.png" alt=""></body></html>`;
 
 const imageServer = http.createServer((req, res) => {
-  if (req.url === '/pixel.png') {
+  if (req.url === '/pixel.png' || req.url === '/pixel-2.png') {
     res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': PIXEL_PNG.length });
     res.end(PIXEL_PNG);
     return;
@@ -75,6 +76,7 @@ const imageServer = http.createServer((req, res) => {
 await new Promise((resolve) => imageServer.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${imageServer.address().port}`;
 const imageUrl = `${origin}/pixel.png`;
+const imageUrl2 = `${origin}/pixel-2.png`;
 
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alt-smoke-profile-'));
 const debugPort = 19000 + Math.floor(Math.random() * 900);
@@ -299,6 +301,29 @@ try {
     { label: 'focus restoration after closing stacked dialog' }
   );
 
+  // --- 実配線での Tab 循環: 最後のフォーカス可能要素から Tab で先頭へ戻る ---
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    r.getElementById('submit-auto-model').focus();
+    return true;
+  })()`);
+  await pageClient.send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Tab',
+    code: 'Tab',
+    windowsVirtualKeyCode: 9
+  });
+  await pageClient.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Tab',
+    code: 'Tab',
+    windowsVirtualKeyCode: 9
+  });
+  results.steps.tabCycledInDialog = await waitFor(
+    () => pageClient.evaluate(promptFocusedExpression),
+    { label: 'Tab focus cycling inside instruction dialog' }
+  );
+
   await pageClient.evaluate(`(() => {
     const r = ${shadow};
     const textarea = r.getElementById('gemini-prompt-textarea');
@@ -393,10 +418,10 @@ try {
   );
 
   // --- 閉じたチャットへの遅延結果: 再表示せず、次の生成結果は表示する ---
-  const sendAltResult = (altText) => swClient.evaluate(`
+  const sendAltResult = (altText, url = imageUrl) => swClient.evaluate(`
     chrome.tabs.sendMessage(${tabId}, {
       action: 'updateAltText',
-      imageUrl: ${JSON.stringify(imageUrl)},
+      imageUrl: ${JSON.stringify(url)},
       altText: ${JSON.stringify(altText)},
       aiProvider: 'Gemini'
     }).then(() => true)
@@ -436,6 +461,29 @@ try {
     { label: 'next result delivered after suppressed one' }
   ) === '再表示される次の結果';
 
+  // --- 別画像によるダイアログ置き換え: invokeOnClose: false により元画像の次回結果が破棄されない ---
+  await sendAltResult('2枚目画像の結果', imageUrl2);
+  await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const dialog = r && r.getElementById('gemini-alt-dialog');
+      return dialog && dialog.dataset.imageSrc === ${JSON.stringify(imageUrl2)};
+    })()`),
+    { label: 'chat dialog replaced by second image' }
+  );
+
+  await sendAltResult('置き換え後も届く結果', imageUrl);
+  results.steps.replacedImageResultDelivered = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const dialog = r && r.getElementById('gemini-alt-dialog');
+      if (!dialog || dialog.dataset.imageSrc !== ${JSON.stringify(imageUrl)}) return null;
+      const areas = [...dialog.querySelectorAll('.chat-bubble-ai textarea')];
+      return areas.length ? areas[0].value : null;
+    })()`),
+    { label: 'original image result delivered after dialog replacement' }
+  ) === '置き換え後も届く結果';
+
   await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
 
   if (results.steps.stackedEscapeClosedTopOnly !== true) {
@@ -443,6 +491,9 @@ try {
   }
   if (results.steps.focusRestoredToInstruction !== true) {
     results.errors.push('focus was not restored to the underlying instruction dialog');
+  }
+  if (results.steps.tabCycledInDialog !== true) {
+    results.errors.push('Tab key did not cycle focus back to the first focusable element inside the dialog');
   }
   if (results.steps.supersededInstructionCancelled !== true) {
     results.errors.push('superseded instruction request was not cancelled (possible hang)');
@@ -455,6 +506,9 @@ try {
   }
   if (results.steps.lateResultSuppressionConsumed !== true) {
     results.errors.push('result after a suppressed one was not delivered');
+  }
+  if (results.steps.replacedImageResultDelivered !== true) {
+    results.errors.push('replacing chat dialog marked the replaced image closed and dropped its next result');
   }
 
   if (results.steps.firstAltText !== 'スモークテスト用の代替テキスト') {

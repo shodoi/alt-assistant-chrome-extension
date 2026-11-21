@@ -673,10 +673,6 @@
      */
     function getAnnouncerInstance() {
         const root = getShadowRoot();
-        if (typeof window !== 'undefined' && window.AltAssistantAnnouncer && typeof window.AltAssistantAnnouncer.createAnnouncer === 'function') {
-            return window.AltAssistantAnnouncer.createAnnouncer(root);
-        }
-
         let container = root.querySelector('#gemini-announcer-container');
         if (!container) {
             container = document.createElement('div');
@@ -713,10 +709,6 @@
      */
     function announceStatus(message) {
         if (!message) return;
-        if (typeof window !== 'undefined' && window.AltAssistantAnnouncer && typeof window.AltAssistantAnnouncer.announceStatus === 'function') {
-            window.AltAssistantAnnouncer.announceStatus(message, getAnnouncerInstance());
-            return;
-        }
         const inst = getAnnouncerInstance();
         if (inst && inst.politeNode) {
             const clean = String(message).trim();
@@ -730,10 +722,6 @@
      */
     function announceAlert(message) {
         if (!message) return;
-        if (typeof window !== 'undefined' && window.AltAssistantAnnouncer && typeof window.AltAssistantAnnouncer.announceAlert === 'function') {
-            window.AltAssistantAnnouncer.announceAlert(message, getAnnouncerInstance());
-            return;
-        }
         const inst = getAnnouncerInstance();
         if (inst && inst.assertiveNode) {
             const clean = String(message).trim();
@@ -749,10 +737,6 @@
      */
     function announceSuccess(altText, maxLen = 80) {
         if (!altText) return;
-        if (typeof window !== 'undefined' && window.AltAssistantAnnouncer && typeof window.AltAssistantAnnouncer.announceSuccess === 'function') {
-            window.AltAssistantAnnouncer.announceSuccess(altText, getAnnouncerInstance(), { maxPreviewLength: maxLen });
-            return;
-        }
         const inst = getAnnouncerInstance();
         if (inst && inst.politeNode) {
             const clean = String(altText).trim();
@@ -1143,11 +1127,6 @@
         const stack = getDialogStack();
         if (stack) {
             return stack.register(dialog, { ...options, restoreFocusElement });
-        }
-
-        // 外部モジュール window.AltAssistantA11y がロード済みの場合は委譲
-        if (typeof window !== 'undefined' && window.AltAssistantA11y && typeof window.AltAssistantA11y.attachDialogA11y === 'function') {
-            return window.AltAssistantA11y.attachDialogA11y(dialog, { ...options, restoreFocusElement });
         }
 
         const { titleElement, onClose, initialFocusElement } = options;
@@ -1670,28 +1649,11 @@
     }
 
     /**
-     * 生成状態ユーティリティ（window.AltAssistantGenerationState）を取得
-     * @returns {object|null}
-     */
-    function getGenerationStateUtils() {
-        if (typeof window !== 'undefined' && window.AltAssistantGenerationState) {
-            return window.AltAssistantGenerationState;
-        }
-        return null;
-    }
-
-    /**
      * 再生成リクエスト送信時にチャットを生成中状態へ遷移させる
      * 送信入力と送信ボタンだけを無効化し、コピー・適用操作は生成中も使えるようにする
      * @param {HTMLElement} dialog - ダイアログ要素
      */
     function beginChatGeneration(dialog) {
-        const utils = getGenerationStateUtils();
-        if (utils && typeof utils.beginChatGeneration === 'function') {
-            utils.beginChatGeneration(dialog);
-            return;
-        }
-
         const inputField = dialog.querySelector('#gemini-instruction-input');
         const sendButton = dialog.querySelector('.gemini-icon-btn.is-send');
         if (inputField) inputField.disabled = true;
@@ -1704,12 +1666,6 @@
      * @param {HTMLElement} dialog - ダイアログ要素
      */
     function endChatGeneration(dialog) {
-        const utils = getGenerationStateUtils();
-        if (utils && typeof utils.endChatGeneration === 'function') {
-            utils.endChatGeneration(dialog);
-            return;
-        }
-
         const loadingBubble = dialog.querySelector('.chat-bubble-loading');
         if (loadingBubble) {
             const wrapper = loadingBubble.closest('.gemini-chat-row');
@@ -1730,11 +1686,6 @@
      * @returns {string}
      */
     function buildModelAwareErrorText(userMessage, modelLabel) {
-        const utils = getGenerationStateUtils();
-        if (utils && typeof utils.buildModelAwareErrorMessage === 'function') {
-            return utils.buildModelAwareErrorMessage(userMessage, modelLabel);
-        }
-
         const baseMessage = typeof userMessage === 'string' ? userMessage.trim() : '';
         const label = typeof modelLabel === 'string' ? modelLabel.trim() : '';
         if (!label || baseMessage.includes(label)) return baseMessage;
@@ -1750,11 +1701,6 @@
      */
     async function sendToBackgroundSafely(message) {
         const sendMessage = (msg) => chrome.runtime.sendMessage(msg);
-        const utils = getGenerationStateUtils();
-        if (utils && typeof utils.sendMessageSafely === 'function') {
-            return utils.sendMessageSafely(sendMessage, message);
-        }
-
         try {
             const response = await sendMessage(message);
             return { ok: true, response };
@@ -2174,14 +2120,7 @@
                 return;
             }
 
-            // グローバルモジュール（AltAssistantImageExtractor）が存在すれば優先利用
-            if (typeof window !== 'undefined' && window.AltAssistantImageExtractor && typeof window.AltAssistantImageExtractor.extractImageFromDomElement === 'function') {
-                const result = await window.AltAssistantImageExtractor.extractImageFromDomElement(targetElement);
-                sendResponse(result);
-                return;
-            }
-
-            // インラインフォールバック抽出
+            // インライン抽出
             const result = await extractImageFromDomElementInternal(targetElement);
             sendResponse(result);
         } catch (err) {
@@ -2324,17 +2263,6 @@
      * @returns {{ success: boolean, imageUrl?: string, targetElementId?: string, reason?: string, error?: string }}
      */
     function handleDetectFocusedImageForShortcut() {
-        if (typeof window !== 'undefined' && window.AltAssistantShortcutTrigger && typeof window.AltAssistantShortcutTrigger.triggerShortcutGeneration === 'function') {
-            const res = window.AltAssistantShortcutTrigger.triggerShortcutGeneration(document, {
-                onNotice: (msg, type) => showGlobalToast(msg, type),
-                announce: (msg) => announceAlert(msg)
-            });
-            if (res && res.success && res.element) {
-                lastRightClickedElement = res.element;
-            }
-            return res;
-        }
-
         return triggerShortcutGenerationInternal();
     }
 

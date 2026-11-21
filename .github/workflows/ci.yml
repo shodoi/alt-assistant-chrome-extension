@@ -19,12 +19,33 @@ jobs:
         with:
           node-version: 22
 
-      - name: Syntax check
-        run: git ls-files -z '*.js' '*.mjs' | xargs -0 -n1 node --check
+      - name: Syntax check and unit tests
+        run: node test/check.mjs
 
-      # node 22 treats positional args as glob patterns; a bare directory such as
-      # `test/` matches the directory itself and is executed as a test file.
-      # Use an explicit glob so CI behaves the same on every Node version, and
-      # exclude test/browser/smoke.mjs (it needs a browser and CLI arguments).
-      - name: Test
-        run: node --test "test/**/*.test.js"
+      - name: Conventional Commits check
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          node -e "
+            const { execSync } = require('node:child_process');
+            const subject = (process.env.PR_TITLE || execSync('git log --no-merges -1 --pretty=%s', { encoding: 'utf8' })).trim();
+            const re = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9._-]+\))?(!)?: .+/;
+            if (!re.test(subject)) {
+              console.error('Commit/PR title does not follow Conventional Commits:', subject);
+              process.exit(1);
+            }
+            console.log('Conventional Commits OK:', subject);
+          "
+
+  browser-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Browser smoke (Edge)
+        run: node test/browser/smoke.mjs "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" .

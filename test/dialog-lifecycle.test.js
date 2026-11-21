@@ -328,6 +328,34 @@ describe('シームS1: createDialogStack (最前面ダイアログのキーボ�
         assert.equal(dialog.getAttribute('aria-modal'), 'true');
         assert.equal(dialog.getAttribute('aria-labelledby'), title.getAttribute('id'));
     });
+
+    it('invokeOnClose: false と restoreFocus: false で閉じると onClose もフォーカス復帰も走らないこと', () => {
+        const doc = createMockDocument();
+        const stack = createStack(doc);
+
+        const origin = createMockElement('button');
+        const other = createMockElement('button');
+        mount(doc, origin, other);
+        origin.focus();
+
+        const dialog = createMockElement('div');
+        mount(doc, dialog);
+        let closed = 0;
+
+        stack.register(dialog, {
+            restoreFocusElement: origin,
+            onClose: () => { closed += 1; }
+        });
+        other.focus();
+
+        const didClose = stack.close(dialog, { invokeOnClose: false, restoreFocus: false });
+
+        assert.equal(didClose, true);
+        assert.equal(closed, 0, '置き換えクローズでは onClose が呼ばれないこと');
+        assert.equal(doc.activeElement, other, 'restoreFocus: false では元の要素へフォーカスを戻さないこと');
+        assert.equal(stack.size(), 0);
+        assert.equal(doc.listenerCount('keydown'), 0);
+    });
 });
 
 describe('シームS2: createPendingResponse (指示ダイアログの応答を一度だけ解決)', () => {
@@ -391,5 +419,25 @@ describe('シームS3: createResultGate (閉じたチャットへの遅延結果
 
         assert.equal(gate.shouldDeliver('https://example.com/b.png'), true);
         assert.equal(gate.shouldDeliver(''), true, 'URL が無い場合は常に届けること');
+    });
+
+    it('ダイアログ置き換え時に invokeOnClose: false で閉じれば元画像の次の結果は破棄されないこと', () => {
+        const doc = createMockDocument();
+        const stack = createStack(doc);
+        const gate = createResultGate();
+        const imageUrl = 'https://example.com/a.png';
+
+        const dialog = createMockElement('div');
+        mount(doc, dialog);
+        stack.register(dialog, {
+            onClose: () => {
+                gate.noteClosed(imageUrl);
+            }
+        });
+
+        stack.close(dialog, { invokeOnClose: false, restoreFocus: false });
+
+        assert.equal(gate.isDiscarded(imageUrl), false, '置き換えクローズで破棄予約が付かないこと');
+        assert.equal(gate.shouldDeliver(imageUrl), true, '次の正当な結果が表示されること');
     });
 });
