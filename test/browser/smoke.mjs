@@ -61,6 +61,8 @@ function makePng(size = 64) {
 }
 const PIXEL_PNG = makePng(64);
 const QUOTED_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#2a7"/></svg>';
+// 最小の 1x1 GIF89a
+const PIXEL_GIF = Buffer.from('R0lGODlhAQABAPAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==', 'base64');
 const PAGE_HTML = `<!doctype html>
 <html lang="ja"><head><meta charset="utf-8"><title>Alt Assistant Smoke</title></head>
 <body>
@@ -71,9 +73,23 @@ const PAGE_HTML = `<!doctype html>
   <div style="margin-top: 160px"><img id="same-2" src="/same.png" alt="" width="64" height="64"></div>
   <img id="srcset-target" src="/srcset-fallback.png" srcset="/srcset-displayed.png 1x" alt="" width="64" height="64">
   <img id="quoted-target" src='data:image/svg+xml;utf8,${QUOTED_SVG}' alt="" width="32" height="32">
+  <img id="svg-target" src="/logo.svg" alt="" width="32" height="32">
+  <img id="blob-target" alt="" width="32" height="32">
+  <img id="gif-target" src="/anim.gif" alt="" width="16" height="16">
 </body></html>`;
 
 const imageServer = http.createServer((req, res) => {
+  if (req.url === '/logo.svg') {
+    const svgBuf = Buffer.from(QUOTED_SVG, 'utf8');
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Content-Length': svgBuf.length });
+    res.end(svgBuf);
+    return;
+  }
+  if (req.url === '/anim.gif') {
+    res.writeHead(200, { 'Content-Type': 'image/gif', 'Content-Length': PIXEL_GIF.length });
+    res.end(PIXEL_GIF);
+    return;
+  }
   if (
     req.url === '/pixel.png' ||
     req.url === '/pixel-2.png' ||
@@ -96,6 +112,8 @@ const sameUrl = `${origin}/same.png`;
 const srcsetFallbackUrl = `${origin}/srcset-fallback.png`;
 const srcsetDisplayedUrl = `${origin}/srcset-displayed.png`;
 const quotedUrl = `data:image/svg+xml;utf8,${QUOTED_SVG}`;
+const svgUrl = `${origin}/logo.svg`;
+const gifUrl = `${origin}/anim.gif`;
 
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alt-smoke-profile-'));
 const debugPort = 19000 + Math.floor(Math.random() * 900);
@@ -386,6 +404,10 @@ try {
 
   const geminiCalls = await swClient.evaluate('globalThis.__smoke.geminiCalls');
   results.steps.geminiCalls = geminiCalls;
+  const pixelFetchCount = await swClient.evaluate(
+    `globalThis.__smoke.fetchedImageUrls.filter((u) => u === ${JSON.stringify(imageUrl)}).length`
+  );
+  results.steps.regenerationReusedImageCache = pixelFetchCount === 1;
 
   // Apply the latest result and confirm the page image alt attribute changes.
   await pageClient.evaluate(`(() => {
@@ -656,6 +678,120 @@ try {
     { label: 'alt dialog opened for quoted URL' }
   );
   await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+
+  // --- #06 1: SVG 画像でラスタライズ経由の生成ができる ---
+  await pageClient.evaluate(`(() => {
+    const svgImg = document.getElementById('svg-target');
+    svgImg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+    svgImg.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+    return true;
+  })()`);
+  await swClient.evaluate(
+    `startGenerationProcess(${JSON.stringify(svgUrl)}, ${tabId}, 0, 'svg-target'); 'started-svg'`
+  );
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-instruction-dialog'); })()`),
+    { label: 'instruction dialog for SVG image' }
+  );
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    r.getElementById('submit-auto-model').click();
+    return true;
+  })()`);
+  results.steps.svgImageGenerated = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const d = r && r.getElementById('gemini-alt-dialog');
+      const areas = d ? [...d.querySelectorAll('.chat-bubble-ai textarea')] : [];
+      return d && d.dataset.imageSrc === ${JSON.stringify(svgUrl)} && areas.length > 0;
+    })()`),
+    { label: 'alt dialog opened for SVG image' }
+  );
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+
+  // --- #06 2: blob: 画像で DOM 抽出フォールバック経由の生成ができる ---
+  const blobUrl = await pageClient.evaluate(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#36c';
+    ctx.fillRect(0, 0, 32, 32);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+    const url = URL.createObjectURL(blob);
+    const img = document.getElementById('blob-target');
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = url;
+    });
+    return url;
+  })()`, { awaitPromise: true });
+  await pageClient.evaluate(`(() => {
+    const blobImg = document.getElementById('blob-target');
+    blobImg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+    blobImg.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+    return true;
+  })()`);
+  await swClient.evaluate(
+    `startGenerationProcess(${JSON.stringify(blobUrl)}, ${tabId}, 0, 'blob-target'); 'started-blob'`
+  );
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-instruction-dialog'); })()`),
+    { label: 'instruction dialog for blob image' }
+  );
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    r.getElementById('submit-auto-model').click();
+    return true;
+  })()`);
+  results.steps.blobImageGenerated = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const d = r && r.getElementById('gemini-alt-dialog');
+      const areas = d ? [...d.querySelectorAll('.chat-bubble-ai textarea')] : [];
+      return d && d.dataset.imageSrc === ${JSON.stringify(blobUrl)} && areas.length > 0;
+    })()`),
+    { label: 'alt dialog opened for blob image' }
+  );
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+
+  // --- #06 3: 未対応形式 (GIF) は Gemini API を呼ばず分かりやすいエラーダイアログを出す ---
+  const geminiCallsBeforeGif = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  await pageClient.evaluate(`(() => {
+    const gifImg = document.getElementById('gif-target');
+    gifImg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+    gifImg.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+    return true;
+  })()`);
+  await swClient.evaluate(
+    `startGenerationProcess(${JSON.stringify(gifUrl)}, ${tabId}, 0, 'gif-target'); 'started-gif'`
+  );
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-instruction-dialog'); })()`),
+    { label: 'instruction dialog for GIF image' }
+  );
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    r.getElementById('submit-auto-model').click();
+    return true;
+  })()`);
+  const gifErrorText = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const errDialog = r && r.getElementById('gemini-error-dialog');
+      if (!errDialog) return null;
+      const desc = errDialog.querySelector('.gemini-dialog-description');
+      return desc ? desc.textContent : null;
+    })()`),
+    { label: 'error dialog for unsupported GIF image' }
+  );
+  const geminiCallsAfterGif = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  results.steps.unsupportedGifRejected =
+    Boolean(gifErrorText && gifErrorText.includes('GIF') && gifErrorText.includes('未対応')) &&
+    geminiCallsAfterGif === geminiCallsBeforeGif;
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-error-dialog button').click(); return true; })()`);
+
   results.steps.totalGeminiCalls = await swClient.evaluate('globalThis.__smoke.geminiCalls');
 
   if (results.steps.stackedEscapeClosedTopOnly !== true) {
@@ -691,6 +827,18 @@ try {
   if (results.steps.quotedUrlHandledSafely !== true) {
     results.errors.push('quoted URL broke status badge or alt dialog handling');
   }
+  if (results.steps.regenerationReusedImageCache !== true) {
+    results.errors.push('regeneration re-fetched the image instead of reusing cached image data');
+  }
+  if (results.steps.svgImageGenerated !== true) {
+    results.errors.push('SVG image did not complete alt text generation');
+  }
+  if (results.steps.blobImageGenerated !== true) {
+    results.errors.push('blob: image did not complete alt text generation');
+  }
+  if (results.steps.unsupportedGifRejected !== true) {
+    results.errors.push('unsupported GIF image did not show a clear unsupported-format error');
+  }
 
   if (results.steps.firstAltText !== 'スモークテスト用の代替テキスト') {
     results.errors.push(`unexpected first alt text: ${results.steps.firstAltText}`);
@@ -701,8 +849,8 @@ try {
   if (results.steps.geminiCalls !== 2) {
     results.errors.push(`expected 2 Gemini calls, got ${results.steps.geminiCalls}`);
   }
-  if (results.steps.totalGeminiCalls !== 5) {
-    results.errors.push(`expected 5 total Gemini calls, got ${results.steps.totalGeminiCalls}`);
+  if (results.steps.totalGeminiCalls !== 7) {
+    results.errors.push(`expected 7 total Gemini calls, got ${results.steps.totalGeminiCalls}`);
   }
   if (results.steps.appliedAlt !== '再生成後の代替テキスト') {
     results.errors.push(`unexpected applied alt: ${results.steps.appliedAlt}`);

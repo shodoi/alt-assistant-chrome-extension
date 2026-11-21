@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 
 // テスト対象のヘルパー関数群
 import {
-    prepareOptimizedImageWithFallback
+    prepareOptimizedImageWithFallback,
+    createPreparedImageCache
 } from '../utils/image-fallback.js';
 
 test('シームB: prepareOptimizedImageWithFallback (SVG・CORSフォールバック連携フロー)', async (t) => {
@@ -152,5 +153,144 @@ test('シームB: prepareOptimizedImageWithFallback (SVG・CORSフォールバ�
                 return true;
             }
         );
+    });
+
+    await t.test('6. 未対応形式 (GIF / AVIF) の Data URI やレスポンスは DOM フォールバックせず分かりやすいエラーで拒否すること', async () => {
+        // GIF Data URI
+        await assert.rejects(
+            async () => {
+                await prepareOptimizedImageWithFallback('data:image/gif;base64,R0lGODlhAQABAAAAACw=');
+            },
+            (err) => {
+                assert.equal(err.isUnsupportedFormat, true);
+                assert.match(err.message, /GIF/);
+                assert.match(err.message, /未対応/);
+                return true;
+            }
+        );
+
+        // AVIF fetch レスポンス（DOMフォールバックや再圧縮を呼ばないこと）
+        let domCalled = false;
+        let optimizeCalled = false;
+        await assert.rejects(
+            async () => {
+                await prepareOptimizedImageWithFallback('https://example.com/photo.avif', {
+                    fetch: async () => ({
+                        ok: true,
+                        status: 200,
+                        blob: async () => ({
+                            type: 'image/avif',
+                            size: 1024,
+                            arrayBuffer: async () => new Uint8Array([0, 0, 0, 1]).buffer
+                        })
+                    }),
+                    optimizeImageBlob: async () => {
+                        optimizeCalled = true;
+                        return { blob: null, mimeType: 'image/jpeg' };
+                    },
+                    sendMessage: async () => {
+                        domCalled = true;
+                        return { success: true };
+                    },
+                    tabId: 104,
+                    frameId: 0
+                });
+            },
+            (err) => {
+                assert.equal(err.isUnsupportedFormat, true);
+                assert.match(err.message, /AVIF/);
+                return true;
+            }
+        );
+        assert.equal(domCalled, false, '未対応形式ではDOM抽出フォールバックを実行しないこと');
+        assert.equal(optimizeCalled, false, '未対応形式ではoptimizeImageBlobを実行しないこと');
+    });
+
+    await t.test('7. SVG 画像をラスタライズできない環境でも生の image/svg+xml を返さず明示的なエラーを返すこと', async () => {
+        await assert.rejects(
+            async () => {
+                await prepareOptimizedImageWithFallback('https://example.com/icon.svg', {
+                    fetch: async () => ({
+                        ok: true,
+                        status: 200,
+                        blob: async () => ({
+                            type: 'image/svg+xml',
+                            size: 100,
+                            arrayBuffer: async () => new Uint8Array([60, 115, 118, 103]).buffer
+                        })
+                    })
+                });
+            },
+            (err) => {
+                assert.match(err.message, /SVG/);
+                return true;
+            }
+        );
+    });
+
+    await t.test('8. 同じリクエスト(requestId)の Regeneration で画像キャッシュを再利用し、再fetch・再圧縮を行わないこと', async () => {
+        const cache = createPreparedImageCache({ maxEntries: 5 });
+        let fetchCount = 0;
+        let optimizeCount = 0;
+
+        const mockFetch = async () => {
+            fetchCount += 1;
+            return {
+                ok: true,
+                status: 200,
+                blob: async () => ({
+                    type: 'image/png',
+                    size: 2048,
+                    arrayBuffer: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).buffer
+                })
+            };
+        };
+
+        const mockOptimize = async (blob) => {
+            optimizeCount += 1;
+            return {
+                blob: {
+                    arrayBuffer: async () => new Uint8Array([0xff, 0xd8, 0xff, 0xe0]).buffer
+                },
+                mimeType: 'image/jpeg'
+            };
+        };
+
+        const first = await prepareOptimizedImageWithFallback('https://example.com/photo.png', {
+            fetch: mockFetch,
+            optimizeImageBlob: mockOptimize,
+            tabId: 201,
+            frameId: 0,
+            targetElementId: 'img-1',
+            requestId: 'req-regen-1',
+            cache
+        });
+
+        const second = await prepareOptimizedImageWithFallback('https://example.com/photo.png', {
+            fetch: mockFetch,
+            optimizeImageBlob: mockOptimize,
+            tabId: 201,
+            frameId: 0,
+            targetElementId: 'img-1',
+            requestId: 'req-regen-1',
+            cache
+        });
+
+        assert.equal(fetchCount, 1, '2回目以降は再fetchしないこと');
+        assert.equal(optimizeCount, 1, '2回目以降は再圧縮しないこと');
+        assert.deepEqual(second, first);
+
+        // 別リクエストIDでは新規取得すること
+        await prepareOptimizedImageWithFallback('https://example.com/photo.png', {
+            fetch: mockFetch,
+            optimizeImageBlob: mockOptimize,
+            tabId: 201,
+            frameId: 0,
+            targetElementId: 'img-1',
+            requestId: 'req-regen-2',
+            cache
+        });
+        assert.equal(fetchCount, 2);
+        assert.equal(optimizeCount, 2);
     });
 });

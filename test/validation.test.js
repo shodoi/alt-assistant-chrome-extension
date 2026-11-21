@@ -30,6 +30,16 @@ describe('validateImageUrl (シームA: 画像URLバリデーション)', () => 
             const webpResult = validateImageUrl('data:image/webp;base64,UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAwA0JaQAA3AA/vuUAAA=');
             assert.equal(webpResult.valid, true);
         });
+
+        it('data:image/svg+xml の utf8 / charset=utf-8 Data URI を許可すること', () => {
+            const utf8Svg = validateImageUrl('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"></svg>');
+            assert.equal(utf8Svg.valid, true);
+            assert.equal(utf8Svg.protocol, 'data:');
+
+            const charsetSvg = validateImageUrl('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3C%2Fsvg%3E');
+            assert.equal(charsetSvg.valid, true);
+            assert.equal(charsetSvg.protocol, 'data:');
+        });
     });
 
     describe('異常系: 危険または非想定なプロトコルの拒否', () => {

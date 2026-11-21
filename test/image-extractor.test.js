@@ -8,7 +8,9 @@ import {
     validateAndParseDataUri,
     calculateScaledDimensions,
     rasterizeSvg,
-    extractImageFromDomElement
+    extractImageFromDomElement,
+    validateImageFormat,
+    detectImageFormatFromBytes
 } from '../utils/image-extractor.js';
 
 test('シームA: isSvgImage (SVGフォーマット判定)', async (t) => {
@@ -52,12 +54,18 @@ test('シームA: validateAndParseDataUri (Data URI の検証とパース)', asy
         assert.equal(result.base64Data, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=');
     });
 
-    await t.test('image/svg+xml の Data URI (URLエンコード形式含む) を正しくパースすること', () => {
+    await t.test('image/svg+xml の Data URI (URLエンコード形式・utf8生文字・%含む属性) を正しくパースすること', () => {
         const svgBase64Uri = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==';
         const result = validateAndParseDataUri(svgBase64Uri);
         assert.equal(result.valid, true);
         assert.equal(result.mimeType, 'image/svg+xml');
         assert.equal(result.isSvg, true);
+
+        const utf8Uri = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%"><rect width="100%" height="100%"/></svg>';
+        const utf8Result = validateAndParseDataUri(utf8Uri);
+        assert.equal(utf8Result.valid, true);
+        assert.equal(utf8Result.mimeType, 'image/svg+xml');
+        assert.equal(utf8Result.isSvg, true);
     });
 
     await t.test('極端に巨大な Data URI (上限20MB超過) を安全に検知して拒否すること', () => {
@@ -97,6 +105,11 @@ test('シームA: calculateScaledDimensions (画像寸法とスケーリング�
         const dims = calculateScaledDimensions(0, 0, 1536);
         assert.equal(dims.width > 0, true);
         assert.equal(dims.height > 0, true);
+    });
+
+    await t.test('極端なアスペクト比でも縮小後の幅・高さが 1px 以上になること', () => {
+        assert.deepEqual(calculateScaledDimensions(5000, 1, 1536), { width: 1536, height: 1 });
+        assert.deepEqual(calculateScaledDimensions(1, 5000, 1536), { width: 1, height: 1536 });
     });
 });
 
@@ -204,5 +217,66 @@ test('シームA: extractImageFromDomElement (DOM要素からのCanvas画像抽�
 
         assert.equal(result.success, true);
         assert.equal(result.base64Image, 'svgRasterizedData');
+    });
+});
+
+test('シームA: validateImageFormat / detectImageFormatFromBytes (形式判定・未対応形式検証)', async (t) => {
+    await t.test('対応済みラスター形式 (PNG / JPEG / WebP / HEIC / HEIF) を許可すること', () => {
+        for (const mime of ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/heic', 'image/heif']) {
+            const res = validateImageFormat({ mimeType: `${mime}; charset=binary` });
+            assert.equal(res.valid, true, `${mime} は許可されること`);
+            assert.equal(res.isSvg, false);
+        }
+    });
+
+    await t.test('SVG形式 (image/svg+xml または .svg URL) をラスタライズ対象として許可すること', () => {
+        const byMime = validateImageFormat({ mimeType: 'image/svg+xml; charset=utf-8' });
+        assert.equal(byMime.valid, true);
+        assert.equal(byMime.isSvg, true);
+
+        const byUrl = validateImageFormat({ url: 'https://example.com/icon.svg?v=1' });
+        assert.equal(byUrl.valid, true);
+        assert.equal(byUrl.isSvg, true);
+    });
+
+    await t.test('未対応形式 (GIF / AVIF / BMP / TIFF / ICO) に対して形式名が分かるエラーを返すこと', () => {
+        const gifRes = validateImageFormat({ mimeType: 'image/gif' });
+        assert.equal(gifRes.valid, false);
+        assert.match(gifRes.error, /GIF/);
+        assert.match(gifRes.error, /未対応/);
+
+        const avifRes = validateImageFormat({ mimeType: 'image/avif' });
+        assert.equal(avifRes.valid, false);
+        assert.match(avifRes.error, /AVIF/);
+        assert.match(avifRes.error, /未対応/);
+
+        const bmpRes = validateImageFormat({ mimeType: 'image/bmp' });
+        assert.equal(bmpRes.valid, false);
+        assert.match(bmpRes.error, /BMP/);
+    });
+
+    await t.test('非画像MIMEタイプ (text/html 等) を明確に拒否すること', () => {
+        const htmlRes = validateImageFormat({ mimeType: 'text/html; charset=utf-8' });
+        assert.equal(htmlRes.valid, false);
+        assert.match(htmlRes.error, /text\/html/);
+    });
+
+    await t.test('MIMEタイプが不明・汎用 (application/octet-stream) でもマジックバイトとURL拡張子から GIF / AVIF を検知すること', () => {
+        const gifBytes = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]); // GIF89a
+        assert.equal(detectImageFormatFromBytes(gifBytes), 'image/gif');
+
+        const avifBytes = Uint8Array.from([
+            0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, // ....ftyp
+            0x61, 0x76, 0x69, 0x66                          // avif
+        ]);
+        assert.equal(detectImageFormatFromBytes(avifBytes), 'image/avif');
+
+        const gifOctet = validateImageFormat({ mimeType: 'application/octet-stream', bytes: gifBytes });
+        assert.equal(gifOctet.valid, false);
+        assert.match(gifOctet.error, /GIF/);
+
+        const avifByUrl = validateImageFormat({ mimeType: '', url: 'https://cdn.example.com/photo.avif?w=800' });
+        assert.equal(avifByUrl.valid, false);
+        assert.match(avifByUrl.error, /AVIF/);
     });
 });

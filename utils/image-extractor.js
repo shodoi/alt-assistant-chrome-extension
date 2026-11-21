@@ -17,6 +17,261 @@ const DEFAULT_MAX_DATA_URI_SIZE = 20 * 1024 * 1024;
 /** JPEG圧縮品質（85%） */
 const DEFAULT_JPEG_QUALITY = 0.85;
 
+/** Gemini API がネイティブでサポートするラスター画像 MIME タイプ */
+const SUPPORTED_RASTER_MIME_TYPES = new Set([
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/heic',
+    'image/heif'
+]);
+
+/** MIME タイプの表記ゆれ正規化マップ */
+const MIME_TYPE_ALIASES = {
+    'image/jpg': 'image/jpeg',
+    'image/pjpeg': 'image/jpeg',
+    'image/x-png': 'image/png'
+};
+
+/** 未対応フォーマットの表示ラベル */
+const UNSUPPORTED_FORMAT_LABELS = {
+    'image/gif': 'GIF',
+    'image/avif': 'AVIF',
+    'image/bmp': 'BMP',
+    'image/x-ms-bmp': 'BMP',
+    'image/tiff': 'TIFF',
+    'image/x-icon': 'ICO',
+    'image/vnd.microsoft.icon': 'ICO',
+    'image/jxl': 'JPEG XL',
+    'image/apng': 'APNG'
+};
+
+/** URL拡張子から推測する MIME タイプマップ */
+const EXTENSION_MIME_MAP = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.heic': 'image/heic',
+    '.heif': 'image/heif',
+    '.svg': 'image/svg+xml',
+    '.gif': 'image/gif',
+    '.avif': 'image/avif',
+    '.bmp': 'image/bmp',
+    '.tif': 'image/tiff',
+    '.tiff': 'image/tiff',
+    '.ico': 'image/x-icon',
+    '.jxl': 'image/jxl'
+};
+
+/**
+ * MIME タイプ文字列からパラメータを除いて正規化する
+ * @param {string|null|undefined} mimeType
+ * @returns {string}
+ */
+function normalizeMimeType(mimeType) {
+    if (typeof mimeType !== 'string') return '';
+    const base = mimeType.split(';')[0].trim().toLowerCase();
+    if (!base) return '';
+    return MIME_TYPE_ALIASES[base] || base;
+}
+
+/**
+ * バイナリの先頭バイト列（マジックバイト）から画像形式を判別する
+ * @param {Uint8Array|ArrayBuffer|null|undefined} inputBytes
+ * @returns {string|null} 判別された MIME タイプ（判別不能時は null）
+ */
+function detectImageFormatFromBytes(inputBytes) {
+    if (!inputBytes) return null;
+    const bytes = inputBytes instanceof Uint8Array
+        ? inputBytes
+        : (inputBytes instanceof ArrayBuffer ? new Uint8Array(inputBytes) : null);
+    if (!bytes || bytes.length < 3) return null;
+
+    // GIF87a / GIF89a
+    if (
+        bytes.length >= 6 &&
+        bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 &&
+        (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61
+    ) {
+        return 'image/gif';
+    }
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (
+        bytes.length >= 8 &&
+        bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+        bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+    ) {
+        return 'image/png';
+    }
+
+    // JPEG: FF D8 FF
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+        return 'image/jpeg';
+    }
+
+    // WebP: RIFF....WEBP
+    if (
+        bytes.length >= 12 &&
+        bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+        bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+    ) {
+        return 'image/webp';
+    }
+
+    // ISO BMFF (AVIF / HEIC / HEIF): ....ftyp<brand>
+    if (
+        bytes.length >= 12 &&
+        bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70
+    ) {
+        const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]).toLowerCase();
+        if (brand === 'avif' || brand === 'avis') return 'image/avif';
+        if (brand === 'heic' || brand === 'heix' || brand === 'hevc' || brand === 'hevx') return 'image/heic';
+        if (brand === 'mif1' || brand === 'msf1' || brand === 'heif') return 'image/heif';
+    }
+
+    // BMP: BM
+    if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
+        return 'image/bmp';
+    }
+
+    // TIFF: II*\0 or MM\0*
+    if (
+        bytes.length >= 4 &&
+        ((bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2a && bytes[3] === 0x00) ||
+         (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[2] === 0x00 && bytes[3] === 0x2a))
+    ) {
+        return 'image/tiff';
+    }
+
+    // ICO: 00 00 01 00
+    if (bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x00 && bytes[2] === 0x01 && bytes[3] === 0x00) {
+        return 'image/x-icon';
+    }
+
+    return null;
+}
+
+/**
+ * URL パスの拡張子から画像 MIME タイプを推測する（data: / blob: は対象外）
+ * @param {string|null|undefined} url
+ * @returns {string|null}
+ */
+function detectImageFormatFromUrl(url) {
+    if (typeof url !== 'string' || !url) return null;
+    const trimmed = url.trim();
+    if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+        return null;
+    }
+
+    try {
+        const parsed = new URL(trimmed, 'https://dummy-base.local');
+        const pathname = parsed.pathname.toLowerCase();
+        const dotIdx = pathname.lastIndexOf('.');
+        if (dotIdx === -1) return null;
+        const ext = pathname.slice(dotIdx);
+        return EXTENSION_MIME_MAP[ext] || null;
+    } catch {
+        const match = trimmed.toLowerCase().match(/(\.[a-z0-9]+)(?:[?#]|$)/);
+        return match ? (EXTENSION_MIME_MAP[match[1]] || null) : null;
+    }
+}
+
+/**
+ * 画像形式が Gemini API で対応可能（または SVG としてラスタライズ可能）か検証する
+ *
+ * @param {object} [params={}]
+ * @param {string|null|undefined} [params.mimeType] - HTTP Content-Type / Blob.type / Data URI MIME
+ * @param {string|null|undefined} [params.url] - 画像URL
+ * @param {Uint8Array|ArrayBuffer|null|undefined} [params.bytes] - 先頭バイト列
+ * @returns {{ valid: boolean, supported: boolean, isSvg: boolean, mimeType: string, formatLabel?: string, error?: string }}
+ */
+function validateImageFormat({ mimeType, url, bytes } = {}) {
+    const normalizedDeclared = normalizeMimeType(mimeType);
+    const isGenericDeclared = !normalizedDeclared ||
+        normalizedDeclared === 'application/octet-stream' ||
+        normalizedDeclared === 'binary/octet-stream';
+
+    const detectedByBytes = detectImageFormatFromBytes(bytes);
+    const detectedByUrl = detectImageFormatFromUrl(url);
+
+    // 宣言 MIME が未指定または汎用バイナリの場合はマジックバイト・URL拡張子から補完
+    let effectiveMime = isGenericDeclared
+        ? (detectedByBytes || detectedByUrl || '')
+        : normalizedDeclared;
+
+    // サーバーが別の画像MIMEを返しても実バイトが明確な未対応形式 (GIF/AVIF/BMP等) なら実体を優先
+    if (!isGenericDeclared && detectedByBytes && UNSUPPORTED_FORMAT_LABELS[detectedByBytes]) {
+        effectiveMime = detectedByBytes;
+    }
+
+    if (!effectiveMime) {
+        if (isSvgImage(url, mimeType)) {
+            return { valid: true, supported: true, isSvg: true, mimeType: 'image/svg+xml' };
+        }
+        return { valid: true, supported: true, isSvg: false, mimeType: '' };
+    }
+
+    if (effectiveMime === 'image/svg+xml') {
+        return { valid: true, supported: true, isSvg: true, mimeType: 'image/svg+xml' };
+    }
+
+    if (SUPPORTED_RASTER_MIME_TYPES.has(effectiveMime)) {
+        return { valid: true, supported: true, isSvg: false, mimeType: effectiveMime };
+    }
+
+    if (UNSUPPORTED_FORMAT_LABELS[effectiveMime]) {
+        const label = UNSUPPORTED_FORMAT_LABELS[effectiveMime];
+        return {
+            valid: false,
+            supported: false,
+            isSvg: false,
+            mimeType: effectiveMime,
+            formatLabel: label,
+            error: `未対応の画像形式（${label}: ${effectiveMime}）です。PNG / JPEG / WebP / HEIC / HEIF / SVG 形式の画像をご利用ください。`
+        };
+    }
+
+    if (effectiveMime.startsWith('image/')) {
+        return {
+            valid: false,
+            supported: false,
+            isSvg: false,
+            mimeType: effectiveMime,
+            error: `未対応の画像形式（${effectiveMime}）です。PNG / JPEG / WebP / HEIC / HEIF / SVG 形式の画像をご利用ください。`
+        };
+    }
+
+    return {
+        valid: false,
+        supported: false,
+        isSvg: false,
+        mimeType: effectiveMime,
+        error: `画像以外のコンテンツ形式（${effectiveMime}）が返されたため処理できません。`
+    };
+}
+
+/**
+ * 未対応形式検証結果から構造化された Error オブジェクトを生成する
+ * @param {{ error?: string, mimeType?: string, formatLabel?: string }} validationResult
+ * @returns {Error}
+ */
+function createUnsupportedFormatError(validationResult) {
+    const err = new Error(
+        validationResult?.error ||
+        '未対応の画像形式です。PNG / JPEG / WebP / HEIC / HEIF / SVG 形式の画像をご利用ください。'
+    );
+    err.code = 'UNSUPPORTED_IMAGE_FORMAT';
+    err.errorType = 'UNSUPPORTED_IMAGE_FORMAT';
+    err.isUnsupportedFormat = true;
+    err.mimeType = validationResult?.mimeType || '';
+    if (validationResult?.formatLabel) {
+        err.formatLabel = validationResult.formatLabel;
+    }
+    return err;
+}
+
 /**
  * 対象の画像URLまたはMIMEタイプがSVG形式であるかを判定する
  * 
@@ -74,32 +329,41 @@ function validateAndParseDataUri(dataUri, options = {}) {
     }
 
     // Data URI の構文解析
-    // 形式: data:[<mediatype>][;base64],<data>
-    const match = dataUri.match(/^data:([a-zA-Z0-9/+-]+)(?:;charset=[^;,]+)?(?:;(base64))?,(.*)$/s);
+    // 形式: data:[<mediatype>][;param]*,<data>
+    const match = dataUri.match(/^data:([a-zA-Z0-9/+.-]+)((?:;[^;,]+)*),(.*)$/s);
     if (!match) {
         return { valid: false, error: '無効な Data URI 構文フォーマットです。' };
     }
 
-    const mimeType = match[1] || 'text/plain';
-    const isBase64 = match[2] === 'base64';
+    const mimeType = normalizeMimeType(match[1]) || 'text/plain';
+    const params = (match[2] || '')
+        .split(';')
+        .map((p) => p.trim().toLowerCase())
+        .filter(Boolean);
+    const isBase64 = params.includes('base64');
     const rawData = match[3];
 
     let base64Data = '';
     if (isBase64) {
         base64Data = rawData;
     } else {
-        // URLエンコードされたテキストデータをBase64化
+        // URLエンコードまたはUTF-8テキストデータをBase64化
+        let decoded = rawData;
         try {
-            const decoded = decodeURIComponent(rawData);
-            if (typeof btoa === 'function') {
-                base64Data = btoa(unescape(encodeURIComponent(decoded)));
-            } else if (typeof Buffer !== 'undefined') {
-                base64Data = Buffer.from(decoded, 'utf8').toString('base64');
-            } else {
-                return { valid: false, error: 'Base64エンコード環境が見つかりません。' };
-            }
+            decoded = decodeURIComponent(rawData);
         } catch (e) {
-            return { valid: false, error: `Data URI のデコードに失敗しました: ${e.message}` };
+            // 生SVG（例: width="100%" の未エンコード %）は UTF-8 テキストとして扱う
+            if (!mimeType.includes('svg')) {
+                return { valid: false, error: `Data URI のデコードに失敗しました: ${e.message}` };
+            }
+        }
+
+        if (typeof btoa === 'function') {
+            base64Data = btoa(unescape(encodeURIComponent(decoded)));
+        } else if (typeof Buffer !== 'undefined') {
+            base64Data = Buffer.from(decoded, 'utf8').toString('base64');
+        } else {
+            return { valid: false, error: 'Base64エンコード環境が見つかりません。' };
         }
     }
 
@@ -389,6 +653,12 @@ if (typeof module !== 'undefined' && module.exports) {
         calculateScaledDimensions,
         rasterizeSvg,
         extractImageFromDomElement,
+        normalizeMimeType,
+        detectImageFormatFromBytes,
+        detectImageFormatFromUrl,
+        validateImageFormat,
+        createUnsupportedFormatError,
+        SUPPORTED_RASTER_MIME_TYPES,
         DEFAULT_MAX_DIMENSION,
         DEFAULT_MAX_DATA_URI_SIZE,
         DEFAULT_JPEG_QUALITY
@@ -403,6 +673,12 @@ if (typeof self !== 'undefined') {
         calculateScaledDimensions,
         rasterizeSvg,
         extractImageFromDomElement,
+        normalizeMimeType,
+        detectImageFormatFromBytes,
+        detectImageFormatFromUrl,
+        validateImageFormat,
+        createUnsupportedFormatError,
+        SUPPORTED_RASTER_MIME_TYPES,
         DEFAULT_MAX_DIMENSION,
         DEFAULT_MAX_DATA_URI_SIZE,
         DEFAULT_JPEG_QUALITY

@@ -113,6 +113,20 @@ describe('シームA: classifyApiError (ユーザー向け日本語エラー分�
         assert.match(classified.userMessage, /コンテンツポリシー|安全性/);
     });
 
+    it('未対応の画像形式エラーを UNSUPPORTED_IMAGE_FORMAT として分類し、再試行対象外にすること', () => {
+        const formatErr = new Error('未対応の画像形式（GIF: image/gif）です。PNG / JPEG / WebP / HEIC / HEIF / SVG 形式の画像をご利用ください。');
+        formatErr.isUnsupportedFormat = true;
+        formatErr.code = 'UNSUPPORTED_IMAGE_FORMAT';
+
+        assert.equal(isRetryableError(formatErr), false);
+
+        const classified = classifyApiError(formatErr);
+        assert.equal(classified.type, 'UNSUPPORTED_IMAGE_FORMAT');
+        assert.equal(classified.action, 'none');
+        assert.match(classified.title, /未対応/);
+        assert.match(classified.userMessage, /GIF/);
+    });
+
     it('未知のエラーを UNKNOWN として安全に分類すること', () => {
         const classified = classifyApiError(new Error('Something unexpected happened'));
         assert.equal(classified.type, 'UNKNOWN');

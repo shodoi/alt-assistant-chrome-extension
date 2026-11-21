@@ -2301,16 +2301,19 @@
 
                 img.onload = () => {
                     try {
-                        const origW = img.naturalWidth || img.width || 800;
-                        const origH = img.naturalHeight || img.height || 600;
+                        const svgRect = typeof svgEl.getBoundingClientRect === 'function'
+                            ? svgEl.getBoundingClientRect()
+                            : null;
+                        const origW = img.naturalWidth || img.width || Math.round(svgRect?.width || 0) || svgEl.clientWidth || 800;
+                        const origH = img.naturalHeight || img.height || Math.round(svgRect?.height || 0) || svgEl.clientHeight || 600;
                         let w = origW;
                         let h = origH;
                         if (w > maxDimension || h > maxDimension) {
                             if (w > h) {
-                                h = Math.round((h * maxDimension) / w);
+                                h = Math.max(1, Math.round((h * maxDimension) / w));
                                 w = maxDimension;
                             } else {
-                                w = Math.round((w * maxDimension) / h);
+                                w = Math.max(1, Math.round((w * maxDimension) / h));
                                 h = maxDimension;
                             }
                         }
@@ -2344,16 +2347,23 @@
         }
 
         // 2. <img> または Image 要素の場合: Canvas に描画して Base64 出力
+        if (element.complete === true && element.naturalWidth === 0) {
+            return {
+                success: false,
+                error: '画像の読み込みに失敗したか、画像データが利用できません（blob URLの失効や破損の可能性があります）。'
+            };
+        }
+
         const origW = element.naturalWidth || element.width || element.clientWidth || 800;
         const origH = element.naturalHeight || element.height || element.clientHeight || 600;
         let w = origW;
         let h = origH;
         if (w > maxDimension || h > maxDimension) {
             if (w > h) {
-                h = Math.round((h * maxDimension) / w);
+                h = Math.max(1, Math.round((h * maxDimension) / w));
                 w = maxDimension;
             } else {
-                w = Math.round((w * maxDimension) / h);
+                w = Math.max(1, Math.round((w * maxDimension) / h));
                 h = maxDimension;
             }
         }

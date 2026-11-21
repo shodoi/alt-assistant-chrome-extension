@@ -22,6 +22,11 @@ const JPEG_COMPRESSION_QUALITY = 0.85;
 /** ArrayBufferからBase64への変換時にスタックオーバーフローを防ぐための分割チャンクサイズ（8KB） */
 const BASE64_CHUNK_SIZE = 8192;
 
+/** 同一画像の Regeneration で画像取得・再圧縮を再利用するための境界付きキャッシュ */
+const preparedImageCache = typeof createPreparedImageCache === 'function'
+    ? createPreparedImageCache({ maxEntries: 20 })
+    : null;
+
 /**
  * 対象のタブおよびフレームへコンテンツスクリプトをオンデマンドで動的注入（Dynamic Script Injection）する
  * 
@@ -163,8 +168,12 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
             }
         }
     } catch (error) {
-        console.error("生成プロセスでエラーが発生しました:", error);
         const classified = error.classified || (typeof classifyApiError === 'function' ? classifyApiError(error) : null);
+        if (classified && classified.type !== 'UNKNOWN') {
+            console.warn("生成プロセスを中断しました:", classified.type, error.message);
+        } else {
+            console.error("生成プロセスでエラーが発生しました:", error);
+        }
         // エラー詳細に使用モデル名を含め、どのUI（ダイアログ・ステータス・読み上げ）でも一貫して表示できるようにする
         const errorDetails = classified
             ? { ...classified, modelLabel: GEMINI_MODEL_LABEL, aiProvider: 'Gemini' }
@@ -214,8 +223,8 @@ function runGenerationProcess(...args) {
  */
 async function generateAltText(imageUrl, promptText, tabId, frameId, targetElementId = null, requestId = null) {
     try {
-        // 画像を一度だけ取得・最適化（SVGラスタライズ & CORSフォールバック対応）
-        const preparedImage = await prepareOptimizedImage(imageUrl, tabId, frameId, targetElementId);
+        // 画像を一度だけ取得・最適化（SVGラスタライズ・CORSフォールバック・Regenerationキャッシュ再利用対応）
+        const preparedImage = await prepareOptimizedImage(imageUrl, tabId, frameId, targetElementId, requestId);
 
         // UIに「Gemini 4 Hydrogen で生成中...」と通知
         sendTabMessage(tabId, {
@@ -425,10 +434,26 @@ function bufferToBase64(buffer) {
  * @returns {Promise<{ blob: Blob, mimeType: string }>} 最適化されたBlobとMIMEタイプ
  */
 async function optimizeImageBlob(originalBlob, maxDimension = MAX_IMAGE_DIMENSION) {
-    // ベクター画像（SVG）や空データはラスタライズ・圧縮処理をバイパスする
-    if (originalBlob.type === 'image/svg+xml' || originalBlob.size === 0) {
-        return { blob: originalBlob, mimeType: originalBlob.type || 'image/jpeg' };
+    if (!originalBlob || (typeof originalBlob.size === 'number' && originalBlob.size === 0)) {
+        throw new Error('画像データが空（0バイト）のため処理できません。');
     }
+
+    const formatCheck = typeof validateImageFormat === 'function'
+        ? validateImageFormat({ mimeType: originalBlob.type })
+        : { valid: true, isSvg: originalBlob.type === 'image/svg+xml', mimeType: originalBlob.type };
+
+    if (!formatCheck.valid) {
+        throw (typeof createUnsupportedFormatError === 'function'
+            ? createUnsupportedFormatError(formatCheck)
+            : new Error(formatCheck.error || '未対応の画像形式です。'));
+    }
+
+    // ベクター画像（SVG）はラスタライズ・圧縮処理をバイパスする（上流でDOMラスタライズ処理）
+    if (formatCheck.isSvg) {
+        return { blob: originalBlob, mimeType: 'image/svg+xml' };
+    }
+
+    const effectiveMime = formatCheck.mimeType || originalBlob.type || 'image/jpeg';
 
     try {
         const imageBitmap = await createImageBitmap(originalBlob);
@@ -437,21 +462,15 @@ async function optimizeImageBlob(originalBlob, maxDimension = MAX_IMAGE_DIMENSIO
         // 長辺が上限以下かつファイルサイズが1MB未満なら、再エンコードによる画質劣化を避けるためそのまま利用
         if (width <= maxDimension && height <= maxDimension && originalBlob.size <= MAX_UNCOMPRESSED_IMAGE_SIZE) {
             imageBitmap.close();
-            return { blob: originalBlob, mimeType: originalBlob.type || 'image/jpeg' };
+            return { blob: originalBlob, mimeType: effectiveMime };
         }
 
         // アスペクト比（aspect ratio）を維持したリサイズ後寸法の計算
-        let targetWidth = width;
-        let targetHeight = height;
-        if (width > maxDimension || height > maxDimension) {
-            if (width > height) {
-                targetWidth = maxDimension;
-                targetHeight = Math.round((height * maxDimension) / width);
-            } else {
-                targetHeight = maxDimension;
-                targetWidth = Math.round((width * maxDimension) / height);
-            }
-        }
+        const scaled = typeof calculateScaledDimensions === 'function'
+            ? calculateScaledDimensions(width, height, maxDimension)
+            : { width, height };
+        const targetWidth = scaled.width;
+        const targetHeight = scaled.height;
 
         // オフスクリーンキャンバス（OffscreenCanvas）で縮小描画
         const canvas = new OffscreenCanvas(targetWidth, targetHeight);
@@ -467,9 +486,16 @@ async function optimizeImageBlob(originalBlob, maxDimension = MAX_IMAGE_DIMENSIO
 
         return { blob: resizedBlob, mimeType: 'image/jpeg' };
     } catch (err) {
-        // 未対応の画像フォーマット（アニメーション等）でエラーが出た場合は元Blobへ安全にフォールバック
-        console.warn('画像リサイズ処理をスキップし、元画像を使用します:', err);
-        return { blob: originalBlob, mimeType: originalBlob.type || 'image/jpeg' };
+        if (err && err.isUnsupportedFormat) {
+            throw err;
+        }
+        // Gemini API が対応する HEIC / HEIF は Chromium の createImageBitmap 非対応のため元 Blob をそのまま渡す
+        if (effectiveMime === 'image/heic' || effectiveMime === 'image/heif') {
+            console.warn(`${effectiveMime} はオフスクリーンデコードをスキップし、元画像を使用します:`, err);
+            return { blob: originalBlob, mimeType: effectiveMime };
+        }
+        console.warn('画像のデコードまたはリサイズに失敗しました:', err);
+        throw new Error('画像の読み込みまたは変換に失敗しました。破損しているか未対応の画像データの可能性があります。');
     }
 }
 
@@ -483,14 +509,17 @@ async function optimizeImageBlob(originalBlob, maxDimension = MAX_IMAGE_DIMENSIO
  * @param {number|null} [tabId=null] - タブID
  * @param {number} [frameId=0] - フレームID
  * @param {string|null} [targetElementId=null] - 対象要素ID
+ * @param {string|null} [requestId=null] - リクエスト相関ID（Regeneration時のキャッシュ再利用に使用）
  * @returns {Promise<{ base64Image: string, mimeType: string }>} 最適化済み画像データ
  */
-async function prepareOptimizedImage(imageUrl, tabId = null, frameId = 0, targetElementId = null) {
+async function prepareOptimizedImage(imageUrl, tabId = null, frameId = 0, targetElementId = null, requestId = null) {
     if (typeof prepareOptimizedImageWithFallback === 'function') {
         return prepareOptimizedImageWithFallback(imageUrl, {
             tabId,
             frameId,
             targetElementId,
+            requestId,
+            cache: preparedImageCache,
             optimizeImageBlob
         });
     }

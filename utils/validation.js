@@ -27,8 +27,8 @@ function validateImageUrl(url) {
 
     // Data URI の個別検証
     if (trimmedUrl.startsWith('data:')) {
-        // data:image/... 形式のみを許可
-        const dataUriPattern = /^data:image\/[a-zA-Z0-9\+\-\.]+;?(?:base64)?,/i;
+        // data:image/... 形式のみを許可（charset=utf-8, utf8, base64 等のパラメータ付きも許可）
+        const dataUriPattern = /^data:image\/[a-zA-Z0-9+.-]+(?:;[a-zA-Z0-9-]+(?:=[^;,]+)?)*,/i;
         if (dataUriPattern.test(trimmedUrl)) {
             return { valid: true, protocol: 'data:' };
         }

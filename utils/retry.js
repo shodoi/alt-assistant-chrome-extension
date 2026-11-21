@@ -112,7 +112,7 @@ function isRetryableError(error) {
 }
 
 /**
- * @typedef {'RATE_LIMIT' | 'API_KEY_INVALID' | 'NETWORK_ERROR' | 'CONTENT_POLICY' | 'UNKNOWN'} ErrorCategory
+ * @typedef {'RATE_LIMIT' | 'API_KEY_INVALID' | 'NETWORK_ERROR' | 'CONTENT_POLICY' | 'CORS_RESTRICTED' | 'UNSUPPORTED_IMAGE_FORMAT' | 'UNKNOWN'} ErrorCategory
  *
  * @typedef {object} ClassifiedError
  * @property {ErrorCategory} type - エラー分類コード
@@ -215,7 +215,25 @@ function classifyApiError(error) {
         };
     }
 
-    // 5. CORS / セキュリティ制限による画像取得失敗 (CORS / Cross-Origin Restriction)
+    // 5. 未対応の画像形式・非画像コンテンツ (Unsupported Image Format)
+    if (
+        error?.isUnsupportedFormat ||
+        error?.code === 'UNSUPPORTED_IMAGE_FORMAT' ||
+        error?.errorType === 'UNSUPPORTED_IMAGE_FORMAT' ||
+        messageLower.includes('未対応の画像形式') ||
+        messageLower.includes('画像以外のコンテンツ形式')
+    ) {
+        return {
+            type: 'UNSUPPORTED_IMAGE_FORMAT',
+            title: '🖼️ 未対応の画像形式です',
+            userMessage: rawMessage,
+            action: 'none',
+            status: status || 415,
+            rawMessage
+        };
+    }
+
+    // 6. CORS / セキュリティ制限による画像取得失敗 (CORS / Cross-Origin Restriction)
     if (
         error?.isCorsBlocked ||
         messageLower.includes('cors') ||

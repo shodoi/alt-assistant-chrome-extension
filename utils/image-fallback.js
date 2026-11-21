@@ -25,9 +25,86 @@ const _isSvgImage = _extractor.isSvgImage || (typeof isSvgImage === 'function' ?
 const _validateAndParseDataUri = _extractor.validateAndParseDataUri || (typeof validateAndParseDataUri === 'function' ? validateAndParseDataUri : () => ({ valid: false }));
 const _calculateScaledDimensions = _extractor.calculateScaledDimensions || (typeof calculateScaledDimensions === 'function' ? calculateScaledDimensions : (w, h) => ({ width: w, height: h }));
 const _rasterizeSvg = _extractor.rasterizeSvg || (typeof rasterizeSvg === 'function' ? rasterizeSvg : async () => ({ success: false }));
+const _validateImageFormat = _extractor.validateImageFormat || (typeof validateImageFormat === 'function' ? validateImageFormat : () => ({ valid: true, supported: true, isSvg: false, mimeType: '' }));
+const _createUnsupportedFormatError = _extractor.createUnsupportedFormatError || (typeof createUnsupportedFormatError === 'function' ? createUnsupportedFormatError : (res) => new Error(res?.error || '未対応の画像形式です。'));
+const _detectImageFormatFromUrl = _extractor.detectImageFormatFromUrl || (typeof detectImageFormatFromUrl === 'function' ? detectImageFormatFromUrl : () => null);
 const _DEFAULT_MAX_DIMENSION = _extractor.DEFAULT_MAX_DIMENSION ?? (typeof DEFAULT_MAX_DIMENSION !== 'undefined' ? DEFAULT_MAX_DIMENSION : 1536);
 const _DEFAULT_MAX_DATA_URI_SIZE = _extractor.DEFAULT_MAX_DATA_URI_SIZE ?? (typeof DEFAULT_MAX_DATA_URI_SIZE !== 'undefined' ? DEFAULT_MAX_DATA_URI_SIZE : 20 * 1024 * 1024);
 const _DEFAULT_JPEG_QUALITY = _extractor.DEFAULT_JPEG_QUALITY ?? (typeof DEFAULT_JPEG_QUALITY !== 'undefined' ? DEFAULT_JPEG_QUALITY : 0.85);
+
+/**
+ * 同一画像に対する Regeneration で再取得・再圧縮を避けるための境界付きキャッシュを生成する
+ * @param {object} [options={}]
+ * @param {number} [options.maxEntries=20] - 最大保持件数
+ * @param {number} [options.ttlMs=600000] - 有効期間（ミリ秒、デフォルト10分）
+ * @param {Function} [options.now=Date.now] - 現在時刻取得関数
+ * @returns {object}
+ */
+function createPreparedImageCache(options = {}) {
+    const maxEntries = options.maxEntries ?? 20;
+    const ttlMs = options.ttlMs ?? 10 * 60 * 1000;
+    const nowFn = options.now || (() => Date.now());
+    const entries = new Map();
+
+    function get(key) {
+        if (!key || !entries.has(key)) return null;
+        const entry = entries.get(key);
+        if (ttlMs > 0 && nowFn() - entry.createdAt > ttlMs) {
+            entries.delete(key);
+            return null;
+        }
+        // LRU: 最近参照したエントリを末尾へ移動
+        entries.delete(key);
+        entries.set(key, entry);
+        return entry.value;
+    }
+
+    function set(key, value) {
+        if (!key || !value || !value.base64Image) return;
+        if (entries.has(key)) {
+            entries.delete(key);
+        }
+        entries.set(key, {
+            value: {
+                base64Image: value.base64Image,
+                mimeType: value.mimeType
+            },
+            createdAt: nowFn()
+        });
+        while (entries.size > maxEntries) {
+            const oldestKey = entries.keys().next().value;
+            entries.delete(oldestKey);
+        }
+    }
+
+    function del(key) {
+        entries.delete(key);
+    }
+
+    function clear() {
+        entries.clear();
+    }
+
+    function size() {
+        return entries.size;
+    }
+
+    return { get, set, delete: del, clear, size };
+}
+
+/**
+ * 最適化済み画像キャッシュのキーを構築する
+ * @param {string} imageUrl
+ * @param {object} [options={}]
+ * @returns {string}
+ */
+function buildPreparedImageCacheKey(imageUrl, options = {}) {
+    if (options.cacheKey) return String(options.cacheKey);
+    if (options.requestId) {
+        return `req:${options.requestId}:${imageUrl}`;
+    }
+    return `url:${options.tabId ?? ''}:${options.frameId ?? 0}:${options.targetElementId ?? ''}:${imageUrl}`;
+}
 
 /**
  * ArrayBuffer を Base64 文字列へ変換するヘルパー
@@ -86,6 +163,25 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
     }
 
     const trimmedUrl = imageUrl.trim();
+    const cache = options.cache || null;
+    const cacheKey = cache ? buildPreparedImageCacheKey(trimmedUrl, options) : null;
+
+    if (cache && cacheKey) {
+        const cached = cache.get(cacheKey);
+        if (cached && cached.base64Image) {
+            return {
+                base64Image: cached.base64Image,
+                mimeType: cached.mimeType || 'image/jpeg'
+            };
+        }
+    }
+
+    const storeInCache = (result) => {
+        if (cache && cacheKey && result && result.base64Image) {
+            cache.set(cacheKey, result);
+        }
+        return result;
+    };
 
     // --- 1. Data URI のハンドリング ---
     if (trimmedUrl.startsWith('data:')) {
@@ -96,25 +192,36 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
 
         // SVG の Data URI の場合はラスタライズ委譲
         if (parsed.isSvg) {
+            let domResult = null;
             if (tabId && sendMessageFn) {
-                const domResult = await requestDomImageExtraction(sendMessageFn, tabId, frameId, trimmedUrl, targetElementId);
+                domResult = await requestDomImageExtraction(sendMessageFn, tabId, frameId, trimmedUrl, targetElementId);
                 if (domResult.success && domResult.base64Image) {
-                    return { base64Image: domResult.base64Image, mimeType: domResult.mimeType || 'image/jpeg' };
+                    return storeInCache({ base64Image: domResult.base64Image, mimeType: domResult.mimeType || 'image/jpeg' });
                 }
             }
             // Service Worker 内でラスタライズ試行
             const rasterResult = await _rasterizeSvg(trimmedUrl);
             if (rasterResult.success && rasterResult.base64Image) {
-                return { base64Image: rasterResult.base64Image, mimeType: rasterResult.mimeType || 'image/jpeg' };
+                return storeInCache({ base64Image: rasterResult.base64Image, mimeType: rasterResult.mimeType || 'image/jpeg' });
             }
-            throw new Error('SVG形式の Data URI をラスタライズできませんでした。');
+            if (domResult?.isCorsBlocked) {
+                const corsErr = new Error(domResult.error || 'SVG画像の取得がCORS制限によりブロックされました。');
+                corsErr.isCorsBlocked = true;
+                throw corsErr;
+            }
+            throw new Error(domResult?.error || 'SVG形式の Data URI をラスタライズできませんでした。');
+        }
+
+        const formatCheck = _validateImageFormat({ mimeType: parsed.mimeType, url: trimmedUrl });
+        if (!formatCheck.valid) {
+            throw _createUnsupportedFormatError(formatCheck);
         }
 
         // 通常ラスター画像の Data URI はそのまま利用
-        return {
+        return storeInCache({
             base64Image: parsed.base64Data,
-            mimeType: parsed.mimeType
-        };
+            mimeType: formatCheck.mimeType || parsed.mimeType
+        });
     }
 
     // --- 2. SVG 画像URLのハンドリング（拡張子 .svg 等） ---
@@ -124,15 +231,21 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
         if (tabId && sendMessageFn) {
             const domResult = await requestDomImageExtraction(sendMessageFn, tabId, frameId, trimmedUrl, targetElementId);
             if (domResult.success && domResult.base64Image) {
-                return {
+                return storeInCache({
                     base64Image: domResult.base64Image,
                     mimeType: domResult.mimeType || 'image/jpeg'
-                };
+                });
+            }
+            if (domResult.isCorsBlocked) {
+                const corsErr = new Error(domResult.error || 'SVG画像の取得がCORS制限によりブロックされました。');
+                corsErr.isCorsBlocked = true;
+                throw corsErr;
             }
             if (domResult.error) {
                 throw new Error(domResult.error);
             }
         }
+        throw new Error('SVG画像はそのまま送信できないため変換が必要ですが、ページ上で画像へ変換できませんでした。');
     }
 
     // --- 3. 通常画像URLの取得とCORSフォールバック ---
@@ -145,39 +258,95 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
             }
 
             const blob = await response.blob();
-            const blobType = blob.type || '';
+            if (typeof blob.size === 'number' && blob.size === 0) {
+                throw new Error('画像データが空（0バイト）のため処理できません。');
+            }
 
-            // レスポンスが SVG だった場合のフォールバック
-            if (blobType.includes('image/svg+xml') || _isSvgImage(trimmedUrl, blobType)) {
+            const headerMime = response.headers && typeof response.headers.get === 'function'
+                ? (response.headers.get('content-type') || '')
+                : '';
+            const declaredMime = blob.type || headerMime;
+
+            // レスポンスが SVG だった場合のフォールバック（生の image/svg+xml は返さない）
+            if (_isSvgImage(trimmedUrl, declaredMime)) {
                 if (tabId && sendMessageFn) {
                     const domResult = await requestDomImageExtraction(sendMessageFn, tabId, frameId, trimmedUrl, targetElementId);
                     if (domResult.success && domResult.base64Image) {
-                        return {
+                        return storeInCache({
                             base64Image: domResult.base64Image,
                             mimeType: domResult.mimeType || 'image/jpeg'
-                        };
+                        });
+                    }
+                    if (domResult.error) {
+                        throw new Error(domResult.error);
                     }
                 }
+                throw new Error('SVG画像はそのまま送信できないため変換が必要ですが、ページ上で画像へ変換できませんでした。');
+            }
+
+            let headerBytes = null;
+            if (typeof blob.slice === 'function') {
+                try {
+                    const headerBuf = await blob.slice(0, 64).arrayBuffer();
+                    headerBytes = new Uint8Array(headerBuf);
+                } catch {
+                    headerBytes = null;
+                }
+            }
+
+            const formatCheck = _validateImageFormat({
+                mimeType: declaredMime,
+                url: trimmedUrl,
+                bytes: headerBytes
+            });
+            if (!formatCheck.valid) {
+                throw _createUnsupportedFormatError(formatCheck);
             }
 
             // 画像の最適化（リサイズ & 圧縮）
             if (typeof options.optimizeImageBlob === 'function') {
                 const { blob: optimizedBlob, mimeType } = await options.optimizeImageBlob(blob);
+                const postFormatCheck = _validateImageFormat({ mimeType });
+                if (!postFormatCheck.valid) {
+                    throw _createUnsupportedFormatError(postFormatCheck);
+                }
                 const arrayBuffer = await optimizedBlob.arrayBuffer();
                 const base64Image = bufferToBase64Fallback(arrayBuffer);
-                return { base64Image, mimeType };
+                return storeInCache({ base64Image, mimeType: postFormatCheck.mimeType || mimeType });
             }
 
             // optimizeImageBlob 未指定時の標準処理
             const arrayBuffer = await blob.arrayBuffer();
+            if (!headerBytes) {
+                const bodyFormatCheck = _validateImageFormat({
+                    mimeType: declaredMime,
+                    url: trimmedUrl,
+                    bytes: new Uint8Array(arrayBuffer.slice(0, 64))
+                });
+                if (!bodyFormatCheck.valid) {
+                    throw _createUnsupportedFormatError(bodyFormatCheck);
+                }
+            }
             const base64Image = bufferToBase64Fallback(arrayBuffer);
-            return {
+            return storeInCache({
                 base64Image,
-                mimeType: blob.type || 'image/jpeg'
-            };
+                mimeType: formatCheck.mimeType || declaredMime || 'image/jpeg'
+            });
         } catch (err) {
+            if (err && err.isUnsupportedFormat) {
+                throw err;
+            }
             console.warn(`Service Worker での画像直接 fetch に失敗しました (${trimmedUrl}):`, err.message);
             fetchError = err;
+        }
+    }
+
+    // URL拡張子が明確な未対応形式（.gif / .avif 等）の場合は DOM Canvas で別形式化せず明示エラーを返す
+    const urlFormat = _detectImageFormatFromUrl(trimmedUrl);
+    if (urlFormat) {
+        const urlFormatCheck = _validateImageFormat({ mimeType: urlFormat, url: trimmedUrl });
+        if (!urlFormatCheck.valid) {
+            throw _createUnsupportedFormatError(urlFormatCheck);
         }
     }
 
@@ -187,14 +356,16 @@ async function prepareOptimizedImageWithFallback(imageUrl, options = {}) {
         const domResult = await requestDomImageExtraction(sendMessageFn, tabId, frameId, trimmedUrl, targetElementId);
         
         if (domResult.success && domResult.base64Image) {
-            return {
+            return storeInCache({
                 base64Image: domResult.base64Image,
                 mimeType: domResult.mimeType || 'image/jpeg'
-            };
+            });
         }
 
         if (domResult.isCorsBlocked) {
-            throw new Error('この画像はセキュリティ制限（CORS）のため、ブラウザからピクセルを抽出できませんでした。');
+            const corsErr = new Error('この画像はセキュリティ制限（CORS）のため、ブラウザからピクセルを抽出できませんでした。');
+            corsErr.isCorsBlocked = true;
+            throw corsErr;
         }
 
         if (domResult.error) {
@@ -243,7 +414,9 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         prepareOptimizedImageWithFallback,
         requestDomImageExtraction,
-        bufferToBase64Fallback
+        bufferToBase64Fallback,
+        createPreparedImageCache,
+        buildPreparedImageCacheKey
     };
 }
 
@@ -252,6 +425,8 @@ if (typeof self !== 'undefined') {
     self.AltAssistantImageFallback = {
         prepareOptimizedImageWithFallback,
         requestDomImageExtraction,
-        bufferToBase64Fallback
+        bufferToBase64Fallback,
+        createPreparedImageCache,
+        buildPreparedImageCacheKey
     };
 }
