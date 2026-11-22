@@ -356,6 +356,80 @@ describe('シームS1: createDialogStack (最前面ダイアログのキーボ�
         assert.equal(stack.size(), 0);
         assert.equal(doc.listenerCount('keydown'), 0);
     });
+
+    it('onChange でダイアログ数の変化を通知し、最後の1枚を閉じると0になること', () => {
+        const doc = createMockDocument();
+        const counts = [];
+        const stack = createStack(doc, { onChange: (count) => counts.push(count) });
+
+        const chat = createMockElement('div');
+        const error = createMockElement('div');
+        mount(doc, chat, error);
+
+        stack.register(chat, {});
+        stack.register(error, {});
+        stack.close(error);
+        stack.close(chat);
+
+        assert.deepEqual(counts, [1, 2, 1, 0], '開閉のたびに現在のダイアログ数が通知されること');
+    });
+
+    it('プログラム的に削除された場合も onChange で0が通知されること', () => {
+        const doc = createMockDocument();
+        const counts = [];
+        const stack = createStack(doc, { onChange: (count) => counts.push(count) });
+
+        const dialog = createMockElement('div');
+        mount(doc, dialog);
+        stack.register(dialog, {});
+
+        dialog.remove();
+        stack.purge();
+
+        assert.deepEqual(counts, [1, 0], 'purge でもバックドロップ解除用の通知が届くこと');
+    });
+
+    it('復帰先が使えない場合に備えて fallbackFocusElement を restoreFocus へ渡すこと', () => {
+        const doc = createMockDocument();
+        const calls = [];
+        const stack = createStack(doc, {
+            restoreFocus: (element, fallback) => calls.push({ element, fallback })
+        });
+
+        const dialog = createMockElement('div');
+        const primary = createMockElement('img');
+        const fallback = createMockElement('button');
+        mount(doc, dialog, primary, fallback);
+
+        stack.register(dialog, { restoreFocusElement: primary, fallbackFocusElement: fallback });
+        stack.close(dialog);
+
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].element, primary);
+        assert.equal(calls[0].fallback, fallback, 'フォールバック要素が第2引数で渡ること');
+    });
+
+    it('切断された復帰先はスキップし、fallbackFocusElement へフォーカスすること', () => {
+        const doc = createMockDocument();
+        const stack = createDialogStack({
+            document: doc,
+            getActiveElement: () => doc.activeElement,
+            getFocusableElements: (dialog) => dialog.focusables || [],
+            setTimeout: null
+        });
+
+        const dialog = createMockElement('div');
+        const primary = createMockElement('img');
+        const fallback = createMockElement('button');
+        primary.isConnected = false;
+        fallback.isConnected = true;
+        mount(doc, dialog, primary, fallback);
+
+        stack.register(dialog, { restoreFocusElement: primary, fallbackFocusElement: fallback });
+        stack.close(dialog);
+
+        assert.equal(doc.activeElement, fallback, '切断済みの画像ではなくフォールバックへ復帰すること');
+    });
 });
 
 describe('シームS2: createPendingResponse (指示ダイアログの応答を一度だけ解決)', () => {

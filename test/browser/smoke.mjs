@@ -76,6 +76,11 @@ const PAGE_HTML = `<!doctype html>
   <img id="svg-target" src="/logo.svg" alt="" width="32" height="32">
   <img id="blob-target" alt="" width="32" height="32">
   <img id="gif-target" src="/anim.gif" alt="" width="16" height="16">
+  <button id="page-button" type="button" style="position: fixed; right: 24px; bottom: 24px; z-index: 1;">page button</button>
+  <script>
+    window.__pageButtonClicks = 0;
+    document.getElementById('page-button').addEventListener('click', () => { window.__pageButtonClicks += 1; });
+  </script>
 </body></html>`;
 
 const imageServer = http.createServer((req, res) => {
@@ -393,6 +398,59 @@ try {
   );
   results.steps.firstAltText = firstText;
 
+  // --- #08 1: AI テキストにキーボードフォーカスすると可視リングが出る ---
+  const aiTextFocusState = await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const dialog = r && r.getElementById('gemini-alt-dialog');
+    const textarea = dialog && dialog.querySelector('.gemini-ai-text');
+    if (!textarea) return null;
+    textarea.focus();
+    const style = getComputedStyle(textarea);
+    return {
+      active: r.activeElement === textarea,
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      outlineColor: style.outlineColor
+    };
+  })()`);
+  results.steps.aiTextFocusRingVisible = Boolean(
+    aiTextFocusState &&
+    aiTextFocusState.active === true &&
+    aiTextFocusState.outlineStyle !== 'none' &&
+    parseFloat(aiTextFocusState.outlineWidth) >= 2 &&
+    aiTextFocusState.outlineColor !== 'rgba(0, 0, 0, 0)' &&
+    aiTextFocusState.outlineColor !== 'transparent'
+  );
+
+  // --- #08 2: モーダル表示中は背後のページをクリックできない ---
+  const pageButtonPoint = await pageClient.evaluate(`(() => {
+    const button = document.getElementById('page-button');
+    const rect = button.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  const clickPageButton = async () => {
+    await pageClient.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: pageButtonPoint.x,
+      y: pageButtonPoint.y,
+      button: 'left',
+      clickCount: 1
+    });
+    await pageClient.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: pageButtonPoint.x,
+      y: pageButtonPoint.y,
+      button: 'left',
+      clickCount: 1
+    });
+    await sleep(120);
+    return pageClient.evaluate('window.__pageButtonClicks');
+  };
+  const backdropWhileOpen = await pageClient.evaluate(
+    `(() => { const r = ${shadow}; return !!r.getElementById('gemini-modal-backdrop'); })()`
+  );
+  const clicksWhileModalOpen = await clickPageButton();
+
   await pageClient.evaluate(`(() => {
     const r = ${shadow};
     const dialog = r.getElementById('gemini-alt-dialog');
@@ -436,6 +494,32 @@ try {
   results.steps.regenerationDialogClosed = await pageClient.evaluate(
     `(() => { const r = ${shadow}; return !r.getElementById('gemini-alt-dialog'); })()`
   );
+
+  // --- #08 3: 閉じた後に画像へフォーカスが戻り、可視リングが出る ---
+  results.steps.focusRestoredToImage = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const img = document.getElementById('target');
+      if (!img || document.activeElement !== img) return false;
+      const style = getComputedStyle(img);
+      return img.getAttribute('tabindex') === '-1' &&
+        style.outlineStyle !== 'none' &&
+        parseFloat(style.outlineWidth) >= 2 &&
+        style.outlineColor !== 'rgba(0, 0, 0, 0)' &&
+        style.outlineColor !== 'transparent';
+    })()`),
+    { label: 'focus restored to image with visible ring' }
+  );
+
+  // --- #08 4: ダイアログを閉じるとバックドロップが消え、ページを操作できる ---
+  const backdropAfterClose = await pageClient.evaluate(
+    `(() => { const r = ${shadow}; return !r.getElementById('gemini-modal-backdrop'); })()`
+  );
+  const clicksAfterClose = await clickPageButton();
+  results.steps.modalBackdropBlocksBackground =
+    backdropWhileOpen === true &&
+    clicksWhileModalOpen === 0 &&
+    backdropAfterClose === true &&
+    clicksAfterClose === 1;
 
   // --- 連続する指示リクエスト: 先のリクエストはハングせずキャンセルされる ---
   await swClient.evaluate(`globalThis.__firstInstruction = null; 'reset'`);
@@ -861,6 +945,16 @@ try {
     dialog.querySelector('.gemini-input-area button').click();
     return true;
   })()`);
+
+  // --- #08 5: 生成中は polite、エラーは assertive のライブリージョンで通知される ---
+  const politeLiveRegion = await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const node = r && r.querySelector('#gemini-announcer-container [aria-live="polite"]');
+    return node ? node.textContent : '';
+  })()`);
+  results.steps.liveRegionAnnouncesGeneration =
+    typeof politeLiveRegion === 'string' && politeLiveRegion.includes('生成中');
+
   const timeoutErrorText = await waitFor(
     () => pageClient.evaluate(`(() => {
       const r = ${shadow};
@@ -871,6 +965,15 @@ try {
     })()`),
     { label: 'timeout error dialog' }
   );
+  const assertiveLiveRegion = await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const node = r && r.querySelector('#gemini-announcer-container [aria-live="assertive"]');
+    return node ? node.textContent : '';
+  })()`);
+  results.steps.liveRegionAnnouncesError =
+    typeof assertiveLiveRegion === 'string' &&
+    assertiveLiveRegion.includes('エラー') &&
+    assertiveLiveRegion.includes('タイムアウト');
   const chatRecoveredAfterTimeout = await pageClient.evaluate(`(() => {
     const r = ${shadow};
     const d = r.getElementById('gemini-alt-dialog');
@@ -978,6 +1081,32 @@ try {
   );
   optionsClient.ws.close();
 
+  // --- #08 6: 復帰先の画像がDOMから消えても、代替要素へフォーカスを戻す ---
+  await pageClient.evaluate(`(() => {
+    const img = document.getElementById('target');
+    img.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+    img.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+    return true;
+  })()`);
+  await sendAltResult('フォールバック確認用', imageUrl2);
+  await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const dialog = r && r.getElementById('gemini-alt-dialog');
+      return Boolean(dialog && dialog.dataset.imageSrc === ${JSON.stringify(imageUrl2)});
+    })()`),
+    { label: 'chat dialog for detached-image fallback' }
+  );
+  await pageClient.evaluate(`(() => { document.getElementById('target-2').remove(); return true; })()`);
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+  results.steps.focusFallbackWhenImageDetached = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const target = document.getElementById('target');
+      return Boolean(target && document.activeElement === target);
+    })()`),
+    { label: 'focus fallback when image is detached' }
+  );
+
   results.steps.totalGeminiCalls = await swClient.evaluate('globalThis.__smoke.geminiCalls');
 
   if (results.steps.stackedEscapeClosedTopOnly !== true) {
@@ -988,6 +1117,24 @@ try {
   }
   if (results.steps.tabCycledInDialog !== true) {
     results.errors.push('Tab key did not cycle focus back to the first focusable element inside the dialog');
+  }
+  if (results.steps.aiTextFocusRingVisible !== true) {
+    results.errors.push('AI text did not show a visible keyboard focus ring');
+  }
+  if (results.steps.modalBackdropBlocksBackground !== true) {
+    results.errors.push('modal backdrop did not block background interaction or was not removed after close');
+  }
+  if (results.steps.focusRestoredToImage !== true) {
+    results.errors.push('focus was not restored to the image with a visible ring');
+  }
+  if (results.steps.focusFallbackWhenImageDetached !== true) {
+    results.errors.push('focus did not fall back to an alternative when the image was detached');
+  }
+  if (results.steps.liveRegionAnnouncesGeneration !== true) {
+    results.errors.push('generation state was not announced in the polite live region');
+  }
+  if (results.steps.liveRegionAnnouncesError !== true) {
+    results.errors.push('error state was not announced in the assertive live region');
   }
   if (results.steps.supersededInstructionCancelled !== true) {
     results.errors.push('superseded instruction request was not cancelled (possible hang)');

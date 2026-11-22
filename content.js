@@ -27,6 +27,19 @@
     /** Shadow DOM 内部でダイアログ要素が配置される基準 z-index */
     const Z_INDEX_DIALOG = '10001';
 
+    /** モーダル表示中に背後のページ操作を遮断するバックドロップの z-index */
+    const Z_INDEX_BACKDROP = '10000';
+
+    /** モーダルバックドロップの要素 ID */
+    const MODAL_BACKDROP_ID = 'gemini-modal-backdrop';
+
+    /**
+     * ページ側要素へ復帰したときに一時表示するフォーカスリング
+     * Shadow DOM のスタイルが届かないため、インラインスタイルで補う
+     */
+    const PAGE_FOCUS_RING_OUTLINE = '3px solid #1a73e8';
+    const PAGE_FOCUS_RING_OFFSET = '2px';
+
     /** エラー・警告などのステータスバッジを自動消去するまでの待機時間（ミリ秒） */
     const STATUS_TOAST_DURATION_MS = 8000;
 
@@ -137,6 +150,16 @@
         .gemini-dialog-alert.is-danger {
             background-color: light-dark(oklch(0.97 0.04 25), oklch(0.20 0.04 25));
             border-color: var(--gemini-danger);
+        }
+
+        /* モーダル表示中に背後のページ操作（クリック・スクロール）を遮断する透明バックドロップ */
+        .gemini-modal-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: ${Z_INDEX_BACKDROP};
+            background: transparent;
+            touch-action: none;
+            overscroll-behavior: contain;
         }
 
         /* アニメーション (good-css: Enter transitions / starting-style) */
@@ -519,6 +542,12 @@
             margin: 0;
             overflow: clip;
             outline: 2px solid transparent;
+        }
+
+        /* AIテキストは基本スタイルの透明アウトラインを上書きし、キーボード操作時に可視リングを出す */
+        .gemini-ai-text:focus-visible {
+            outline: max(2px, 0.08em) solid var(--gemini-primary);
+            outline-offset: 2px;
         }
 
         .chat-bubble-loading {
@@ -945,23 +974,132 @@
     }
 
     /**
-     * 指定要素に安全にフォーカスを復帰する
-     * HTMLImageElement やフォーカス属性を持たない要素には tabindex="-1" を補完してフォーカスを当てる
-     * @param {Element|null} element
+     * フォーカス復帰先として使える「最も近いフォーカス可能な祖先」のセレクタ
      */
-    function restoreFocusSafely(element) {
-        if (!element || typeof element.focus !== 'function') return;
+    const FOCUSABLE_ANCESTOR_SELECTOR = [
+        'a[href]',
+        'button:not([disabled])',
+        'input:not([disabled])',
+        'select:not([disabled])',
+        'textarea:not([disabled])',
+        '[tabindex]:not([tabindex="-1"])',
+        '[contenteditable="true"]'
+    ].join(', ');
+
+    /**
+     * プログラムからフォーカスを当てる際に tabindex="-1" を補完するタグ
+     */
+    const PROGRAMMATIC_FOCUS_TAGS = new Set(['IMG', 'DIV', 'SPAN', 'FIGURE', 'PICTURE', 'SVG']);
+
+    /** ページ側要素に付与した可視フォーカスリングの後始末関数 */
+    const focusRingRestorers = new WeakMap();
+
+    /**
+     * ページ側の要素へ一時的な可視フォーカスリングを付与する
+     * Shadow DOM のスタイルはページ要素に届かないため、復帰時だけインラインで補う
+     * @param {Element} element
+     */
+    function applyFocusRing(element) {
+        if (!element || !element.style || focusRingRestorers.has(element)) return;
+
+        const previousOutline = element.style.outline;
+        const previousOffset = element.style.outlineOffset;
+
+        element.style.outline = PAGE_FOCUS_RING_OUTLINE;
+        element.style.outlineOffset = PAGE_FOCUS_RING_OFFSET;
+
+        const removeRing = () => {
+            element.style.outline = previousOutline;
+            element.style.outlineOffset = previousOffset;
+            if (typeof element.removeEventListener === 'function') {
+                element.removeEventListener('blur', removeRing);
+            }
+            focusRingRestorers.delete(element);
+        };
+
+        if (typeof element.addEventListener === 'function') {
+            element.addEventListener('blur', removeRing);
+        }
+        focusRingRestorers.set(element, removeRing);
+    }
+
+    /**
+     * 要素がフォーカス可能な祖先を1つだけ返す
+     * @param {Element|null} element
+     * @returns {Element|null}
+     */
+    function findFocusableAncestor(element) {
+        if (!element) return null;
+        let current = element.parentElement;
+        while (current && current !== document.body && current !== document.documentElement) {
+            if (typeof current.matches === 'function' && current.matches(FOCUSABLE_ANCESTOR_SELECTOR)) {
+                return current;
+            }
+            current = current.parentElement;
+        }
+        return null;
+    }
+
+    /**
+     * 1つの要素へ安全にフォーカスを当てる
+     * 非対話要素には tabindex="-1" を補完し、フォーカスできた場合だけ可視リングを付与する
+     * @param {Element|null} element
+     * @returns {boolean} フォーカスを当てられた場合は true
+     */
+    function tryFocusElement(element) {
+        if (!element || typeof element.focus !== 'function') return false;
+        if (element === document.body || element === document.documentElement) return false;
+        if (!isNodeConnected(element, document)) return false;
+
         try {
             if (typeof element.hasAttribute === 'function' && !element.hasAttribute('tabindex')) {
                 const tagName = (element.tagName || '').toUpperCase();
-                if (tagName === 'IMG' || tagName === 'DIV' || tagName === 'SPAN' || tagName === 'FIGURE') {
+                if (PROGRAMMATIC_FOCUS_TAGS.has(tagName)) {
                     element.setAttribute('tabindex', '-1');
                 }
             }
             element.focus();
         } catch (e) {
-            // 要素がDOMツリーから削除されている場合などは無視
+            return false;
         }
+
+        const active = getDeepActiveElement(document);
+        if (active === element || document.activeElement === element) {
+            applyFocusRing(element);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 指定要素に安全にフォーカスを復帰する
+     * 画像自体がフォーカス不能・DOM から切断済みの場合に備え、
+     * 対象 → 最も近いフォーカス可能な祖先 → 指定フォールバック → 最後の右クリック要素 → Shadow ホスト
+     * の順に試す。
+     * @param {Element|null} element
+     * @param {Element|null} [fallbackElement]
+     * @returns {boolean} いずれかへフォーカスできた場合は true
+     */
+    function restoreFocusSafely(element, fallbackElement) {
+        const candidates = [];
+        const seen = new Set();
+        const addCandidate = (candidate) => {
+            if (!candidate || seen.has(candidate)) return;
+            seen.add(candidate);
+            candidates.push(candidate);
+        };
+
+        addCandidate(element);
+        addCandidate(findFocusableAncestor(element));
+        addCandidate(fallbackElement);
+        addCandidate(lastRightClickedElement);
+        addCandidate(findFocusableAncestor(lastRightClickedElement));
+        addCandidate(shadowHostInstance);
+
+        for (const candidate of candidates) {
+            if (tryFocusElement(candidate)) return true;
+        }
+        return false;
     }
 
     /**
@@ -1143,6 +1281,59 @@
     }
 
     /**
+     * モーダル中の背後のページ操作（クリック・スクロール）を遮断する透明バックドロップを表示する
+     * @returns {HTMLElement|null}
+     */
+    function ensureModalBackdrop() {
+        const root = getShadowRoot();
+        let backdrop = root.getElementById(MODAL_BACKDROP_ID);
+        if (backdrop) return backdrop;
+
+        backdrop = document.createElement('div');
+        backdrop.id = MODAL_BACKDROP_ID;
+        backdrop.className = 'gemini-modal-backdrop';
+        backdrop.setAttribute('aria-hidden', 'true');
+
+        const swallowPointer = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        };
+        backdrop.addEventListener('pointerdown', swallowPointer, true);
+        backdrop.addEventListener('mousedown', swallowPointer, true);
+        backdrop.addEventListener('click', swallowPointer, true);
+
+        const blockScroll = (event) => {
+            event.preventDefault();
+        };
+        backdrop.addEventListener('wheel', blockScroll, { passive: false });
+        backdrop.addEventListener('touchmove', blockScroll, { passive: false });
+
+        root.appendChild(backdrop);
+        return backdrop;
+    }
+
+    /**
+     * モーダルバックドロップを破棄する
+     */
+    function removeModalBackdrop() {
+        if (!shadowRootInstance) return;
+        const backdrop = shadowRootInstance.getElementById(MODAL_BACKDROP_ID);
+        if (backdrop) backdrop.remove();
+    }
+
+    /**
+     * ダイアログ数に応じてバックドロップを同期する
+     * @param {number} count - スタック内のダイアログ数
+     */
+    function syncModalBackdrop(count) {
+        if (count > 0) {
+            ensureModalBackdrop();
+        } else {
+            removeModalBackdrop();
+        }
+    }
+
+    /**
      * ダイアログスタックを取得する（初回のみ生成）
      * @returns {object|null}
      */
@@ -1154,7 +1345,8 @@
             document: document,
             getActiveElement: () => getDeepActiveElement(document),
             getFocusableElements: getFocusableElements,
-            restoreFocus: restoreFocusSafely
+            restoreFocus: restoreFocusSafely,
+            onChange: syncModalBackdrop
         });
         return dialogStack;
     }
@@ -1184,7 +1376,10 @@
             dialog._a11yCleanup = null;
         }
         if (options.restoreFocus !== false) {
-            restoreFocusSafely(dialog._restoreFocusElement || lastRightClickedElement);
+            restoreFocusSafely(
+                dialog._restoreFocusElement || lastRightClickedElement,
+                dialog._focusFallbackElement || null
+            );
         }
         if (dialog.parentNode) dialog.remove();
     }
@@ -1208,6 +1403,7 @@
      * @param {Function} [options.onClose] - ダイアログクローズ時のコールバック処理
      * @param {HTMLElement} [options.initialFocusElement] - 初期フォーカスを当てる要素
      * @param {HTMLElement} [options.restoreFocusElement] - クローズ後にフォーカスを復帰する要素
+     * @param {HTMLElement} [options.fallbackFocusElement] - 復帰先が使えない場合のフォールバック
      * @returns {Function} cleanup - イベントリスナーを破棄するクリーンアップ関数
      */
     function attachDialogAccessibility(dialog, options = {}) {
@@ -1219,11 +1415,12 @@
             : lastRightClickedElement;
         // 重ねて開いた場合は「直前までフォーカスしていた要素」へ戻す
         const restoreFocusElement = options.restoreFocusElement || defaultRestoreElement;
+        const fallbackFocusElement = options.fallbackFocusElement || findFocusableAncestor(restoreFocusElement);
 
         // スタック管理を最優先する（複数ダイアログの Escape / Tab を一元制御するため）
         const stack = getDialogStack();
         if (stack) {
-            return stack.register(dialog, { ...options, restoreFocusElement });
+            return stack.register(dialog, { ...options, restoreFocusElement, fallbackFocusElement });
         }
 
         const { titleElement, onClose, initialFocusElement } = options;
@@ -1247,7 +1444,7 @@
             if (isCleanedUp) return;
             isCleanedUp = true;
             document.removeEventListener('keydown', handleKeyDown, true);
-            restoreFocusSafely(elementToRestore);
+            restoreFocusSafely(elementToRestore, fallbackFocusElement);
         };
 
         const handleKeyDown = (e) => {
@@ -1332,6 +1529,7 @@
 
         dialog._a11yCleanup = cleanup;
         dialog._restoreFocusElement = elementToRestore;
+        dialog._focusFallbackElement = fallbackFocusElement;
         return cleanup;
     }
 
@@ -1773,6 +1971,9 @@
         const sendButton = dialog.querySelector('.gemini-icon-btn.is-send');
         if (inputField) inputField.disabled = true;
         if (sendButton) sendButton.disabled = true;
+
+        const chatHistory = dialog.querySelector('#gemini-chat-history');
+        if (chatHistory) chatHistory.setAttribute('aria-busy', 'true');
     }
 
     /**
@@ -1792,6 +1993,9 @@
         const sendButton = dialog.querySelector('.gemini-icon-btn.is-send');
         if (inputField) inputField.disabled = false;
         if (sendButton) sendButton.disabled = false;
+
+        const chatHistory = dialog.querySelector('#gemini-chat-history');
+        if (chatHistory) chatHistory.removeAttribute('aria-busy');
     }
 
     /**

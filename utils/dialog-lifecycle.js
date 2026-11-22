@@ -53,11 +53,14 @@
     }
 
     /**
-     * 要素へ安全にフォーカスを当てる（DOM から外れた要素でも例外にしない）
+     * 単一要素へ安全にフォーカスを当てる（DOM から外れた要素では false を返す）
      * @param {Element|null} element
+     * @returns {boolean} フォーカスを当てられた場合は true
      */
-    function defaultRestoreFocus(element) {
-        if (!element || typeof element.focus !== 'function') return;
+    function focusElement(element) {
+        if (!element || typeof element.focus !== 'function') return false;
+        if (element.isConnected === false) return false;
+
         try {
             if (typeof element.hasAttribute === 'function' && !element.hasAttribute('tabindex')) {
                 const tagName = (element.tagName || '').toUpperCase();
@@ -66,8 +69,23 @@
                 }
             }
             element.focus();
+            return true;
         } catch (error) {
             // 要素が削除済みの場合は復帰できないため無視する
+            return false;
+        }
+    }
+
+    /**
+     * 要素へ安全にフォーカスを当てる（DOM から外れた要素でも例外にしない）
+     * 復帰先が切断されている場合は fallbackElement へフォールバックする
+     * @param {Element|null} element
+     * @param {Element|null} [fallbackElement]
+     */
+    function defaultRestoreFocus(element, fallbackElement) {
+        if (focusElement(element)) return;
+        if (fallbackElement && fallbackElement !== element) {
+            focusElement(fallbackElement);
         }
     }
 
@@ -97,6 +115,7 @@
      * @param {Function} [options.getFocusableElements] - フォーカス可能要素の抽出関数
      * @param {Function} [options.restoreFocus] - フォーカス復帰関数
      * @param {Element} [options.fallbackFocusElement] - 復帰先の最終フォールバック
+     * @param {Function} [options.onChange] - ダイアログ数が変化したときの通知（モーダル背景の生成・破棄など）
      * @param {Node} [options.observeRoot] - ダイアログ削除を監視するルート（既定: ダイアログの親）
      * @param {Function} [options.createObserver] - MutationObserver ファクトリ（テスト用 DI）
      * @param {Function} [options.setTimeout] - 初期フォーカス用のスケジューラ（テスト用 DI）
@@ -113,6 +132,7 @@
         const getActiveElement = options.getActiveElement || defaultGetActiveElement;
         const getFocusableElements = options.getFocusableElements || defaultGetFocusableElements;
         const restoreFocus = options.restoreFocus || defaultRestoreFocus;
+        const onChange = typeof options.onChange === 'function' ? options.onChange : null;
         const schedule = options.setTimeout !== undefined
             ? options.setTimeout
             : (typeof setTimeout === 'function' ? setTimeout : null);
@@ -150,6 +170,18 @@
                 if (isNodeConnected(entries[i].dialog, doc)) return entries[i];
             }
             return null;
+        }
+
+        /**
+         * ダイアログ数が変化したことを通知する（モーダル背景の生成・破棄など）
+         */
+        function notifyChange() {
+            if (!onChange) return;
+            try {
+                onChange(entries.length);
+            } catch (error) {
+                console.warn('ダイアログスタックの状態通知でエラーが発生しました:', error);
+            }
         }
 
         function ensureKeydownListener() {
@@ -240,17 +272,21 @@
             if (cleanupOptions.restore !== false) {
                 const remaining = getTopEntry();
                 const target = entry.elementToRestore;
+                const fallback = entry.fallbackFocusElement;
 
                 if (remaining && target && remaining.dialog.contains(target)) {
-                    restoreFocus(target);
+                    restoreFocus(target, fallback);
                 } else if (remaining) {
                     focusEntry(remaining);
                 } else if (target) {
-                    restoreFocus(target);
+                    restoreFocus(target, fallback);
+                } else if (fallback) {
+                    restoreFocus(null, fallback);
                 }
             }
 
             disconnectObserverIfIdle();
+            notifyChange();
             return true;
         }
 
@@ -291,13 +327,15 @@
                 elementToRestore: restoreFocusElement
                     || getActiveElement(doc)
                     || dialogOptions.fallbackFocusElement
-                    || null
+                    || null,
+                fallbackFocusElement: dialogOptions.fallbackFocusElement || null
             };
 
             entries.push(entry);
             ensureKeydownListener();
             ensureObserver();
             observeDialog(dialog);
+            notifyChange();
 
             if (schedule) {
                 schedule(() => {
