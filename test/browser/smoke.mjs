@@ -120,6 +120,9 @@ const quotedUrl = `data:image/svg+xml;utf8,${QUOTED_SVG}`;
 const svgUrl = `${origin}/logo.svg`;
 const gifUrl = `${origin}/anim.gif`;
 
+/** スモーク全体で想定する Gemini API 呼び出し回数（シーン追加時はここだけ更新する） */
+const EXPECTED_TOTAL_GEMINI_CALLS = 17;
+
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alt-smoke-profile-'));
 const debugPort = 19000 + Math.floor(Math.random() * 900);
 const chrome = spawn(
@@ -271,12 +274,19 @@ try {
   );
 
   await swClient.evaluate(`
-    globalThis.__smoke = { geminiCalls: 0, fetchedImageUrls: [], geminiScriptedResponses: [] };
+    globalThis.__smoke = { geminiCalls: 0, fetchedImageUrls: [], geminiScriptedResponses: [], lastGeminiPrompt: null };
     const __realFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input.url;
       if (url.includes('generativelanguage.googleapis.com')) {
         globalThis.__smoke.geminiCalls += 1;
+        try {
+          const parsedBody = JSON.parse(init?.body || '{}');
+          globalThis.__smoke.lastGeminiPrompt = parsedBody?.contents?.[0]?.parts?.[0]?.text || null;
+        } catch {
+          globalThis.__smoke.lastGeminiPrompt = null;
+          globalThis.__smoke.promptParseErrors = (globalThis.__smoke.promptParseErrors || 0) + 1;
+        }
         const scripted = globalThis.__smoke.geminiScriptedResponses.shift();
         if (scripted) {
           if (scripted.hang) {
@@ -1107,6 +1117,149 @@ try {
     { label: 'focus fallback when image is detached' }
   );
 
+  // --- #09: 空白入力拒否・英語指定プロンプト・空履歴 Regeneration ---
+  const callsBefore09 = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  await pageClient.evaluate(`(() => {
+    const img = document.getElementById('target');
+    img.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 2 }));
+    img.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, button: 2 }));
+    return true;
+  })()`);
+  await swClient.evaluate(`startGenerationProcess(${JSON.stringify(imageUrl)}, ${tabId}, 0, 'target'); 'started-09'`);
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-instruction-dialog'); })()`),
+    { label: 'instruction dialog for #09' }
+  );
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const ta = r.getElementById('gemini-prompt-textarea');
+    ta.value = '   \\t\\n  ';
+    r.getElementById('submit-auto-model').click();
+    return true;
+  })()`);
+  const blankInstructionState = await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const dialog = r.getElementById('gemini-instruction-dialog');
+    const ta = r.getElementById('gemini-prompt-textarea');
+    const err = r.getElementById('gemini-instruction-error');
+    return {
+      dialogOpen: Boolean(dialog),
+      ariaInvalid: ta?.getAttribute('aria-invalid'),
+      errorHidden: err?.hidden,
+      errorText: err?.textContent || ''
+    };
+  })()`);
+  const callsAfterBlankInstruction = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  results.steps.blankInstructionRejected =
+    blankInstructionState.dialogOpen === true &&
+    blankInstructionState.ariaInvalid === 'true' &&
+    blankInstructionState.errorHidden === false &&
+    blankInstructionState.errorText.length > 0 &&
+    callsAfterBlankInstruction === callsBefore09;
+
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const ta = r.getElementById('gemini-prompt-textarea');
+    ta.value = '画像を日本語で説明';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    r.getElementById('submit-auto-model').click();
+    return true;
+  })()`);
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !!r.getElementById('gemini-alt-dialog'); })()`),
+    { label: 'alt dialog opened for #09' }
+  );
+
+  // チャット欄での空白入力拒否
+  const callsBeforeBlankChat = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const dialog = r.getElementById('gemini-alt-dialog');
+    const input = dialog.querySelector('#gemini-instruction-input');
+    input.value = '   ';
+    dialog.querySelector('.gemini-icon-btn.is-send').click();
+    return true;
+  })()`);
+  const blankChatState = await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const input = r.getElementById('gemini-instruction-input');
+    const err = r.getElementById('gemini-chat-input-error');
+    return {
+      ariaInvalid: input?.getAttribute('aria-invalid'),
+      errorHidden: err?.hidden,
+      errorText: err?.textContent || ''
+    };
+  })()`);
+  const callsAfterBlankChat = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  results.steps.blankChatInputRejected =
+    blankChatState.ariaInvalid === 'true' &&
+    blankChatState.errorHidden === false &&
+    blankChatState.errorText.length > 0 &&
+    callsAfterBlankChat === callsBeforeBlankChat;
+
+  // 「英語で」再生成で英語プロンプトが送られ英語が返る
+  await swClient.evaluate(`
+    globalThis.__smoke.geminiScriptedResponses = [
+      { status: 200, body: { candidates: [{ content: { parts: [{ text: 'A blue square graphic' }] } }] } }
+    ];
+    true;
+  `);
+  await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const dialog = r.getElementById('gemini-alt-dialog');
+    const input = dialog.querySelector('#gemini-instruction-input');
+    input.value = '英語で';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    dialog.querySelector('.gemini-icon-btn.is-send').click();
+    return true;
+  })()`);
+  const englishAlt = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const dialog = r && r.getElementById('gemini-alt-dialog');
+      const areas = dialog ? [...dialog.querySelectorAll('.chat-bubble-ai textarea')] : [];
+      return areas.length >= 2 ? areas[areas.length - 1].value : null;
+    })()`),
+    { label: 'english alt text after regeneration' }
+  );
+  const lastPrompt09 = await swClient.evaluate('globalThis.__smoke.lastGeminiPrompt');
+  results.steps.englishRegenerationPrompt =
+    englishAlt === 'A blue square graphic' &&
+    typeof lastPrompt09 === 'string' &&
+    lastPrompt09.includes('Output in English.') &&
+    !lastPrompt09.includes('Output in Japanese');
+
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn').click(); return true; })()`);
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${shadow}; return !r.getElementById('gemini-alt-dialog'); })()`),
+    { label: 'alt dialog closed before empty-history regeneration test' }
+  );
+
+  // 履歴が空文字でも Regeneration が初回扱いにならず showInstructionDialog を開かない
+  await swClient.evaluate(`
+    globalThis.__smoke.geminiScriptedResponses = [
+      { status: 200, body: { candidates: [{ content: { parts: [{ text: 'Empty history regen result' }] } }] } }
+    ];
+    startGenerationProcess(${JSON.stringify(imageUrl)}, ${tabId}, 0, 'target', {
+      history: '',
+      additionalInstruction: '英語で',
+      requestId: 'smoke-empty-history-req'
+    });
+    'started-empty-history'
+  `);
+  const emptyHistoryAlt = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      if (r && r.getElementById('gemini-instruction-dialog')) return '__UNEXPECTED_INSTRUCTION__';
+      const dialog = r && r.getElementById('gemini-alt-dialog');
+      const areas = dialog ? [...dialog.querySelectorAll('.chat-bubble-ai textarea')] : [];
+      return areas.length ? areas[areas.length - 1].value : null;
+    })()`),
+    { label: 'empty-history regeneration alt dialog' }
+  );
+  results.steps.emptyHistoryRegenerationSucceeded = emptyHistoryAlt === 'Empty history regen result';
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-alt-dialog .gemini-close-btn')?.click(); return true; })()`);
+
   results.steps.totalGeminiCalls = await swClient.evaluate('globalThis.__smoke.geminiCalls');
 
   if (results.steps.stackedEscapeClosedTopOnly !== true) {
@@ -1187,6 +1340,18 @@ try {
   if (results.steps.optionsValidationTimedOut !== true) {
     results.errors.push('options API key validation did not timeout and recover saveButton');
   }
+  if (results.steps.blankInstructionRejected !== true) {
+    results.errors.push('blank instruction was not rejected with visible reason');
+  }
+  if (results.steps.blankChatInputRejected !== true) {
+    results.errors.push('blank chat regeneration input was not rejected with visible reason');
+  }
+  if (results.steps.englishRegenerationPrompt !== true) {
+    results.errors.push('regeneration with 英語で did not produce English output directive without Japanese override');
+  }
+  if (results.steps.emptyHistoryRegenerationSucceeded !== true) {
+    results.errors.push('regeneration with empty history fell back to initial instruction dialog or failed');
+  }
 
   if (results.steps.firstAltText !== 'スモークテスト用の代替テキスト') {
     results.errors.push(`unexpected first alt text: ${results.steps.firstAltText}`);
@@ -1197,14 +1362,19 @@ try {
   if (results.steps.geminiCalls !== 2) {
     results.errors.push(`expected 2 Gemini calls, got ${results.steps.geminiCalls}`);
   }
-  if (results.steps.totalGeminiCalls !== 14) {
-    results.errors.push(`expected 14 total Gemini calls, got ${results.steps.totalGeminiCalls}`);
+  if (results.steps.totalGeminiCalls !== EXPECTED_TOTAL_GEMINI_CALLS) {
+    results.errors.push(`expected ${EXPECTED_TOTAL_GEMINI_CALLS} total Gemini calls, got ${results.steps.totalGeminiCalls}`);
   }
   if (results.steps.appliedAlt !== '再生成後の代替テキスト') {
     results.errors.push(`unexpected applied alt: ${results.steps.appliedAlt}`);
   }
   if (!results.steps.regenerationDialogClosed) {
     results.errors.push('chat dialog stayed open after applying alt text');
+  }
+
+  results.steps.promptParseErrors = await swClient.evaluate('globalThis.__smoke.promptParseErrors || 0');
+  if (results.steps.promptParseErrors > 0) {
+    results.errors.push(`failed to parse ${results.steps.promptParseErrors} Gemini request bodies`);
   }
 
   const swProblems = swClient.events.filter((e) => e.type === 'exception' || e.type === 'error');

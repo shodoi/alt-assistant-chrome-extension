@@ -426,6 +426,40 @@
             border-color: var(--gemini-primary);
         }
 
+        .gemini-dialog-textarea[aria-invalid="true"],
+        .gemini-input-field[aria-invalid="true"] {
+            border-color: var(--gemini-danger);
+        }
+
+        .gemini-dialog-error {
+            margin-block: -0.5rem 0.75rem;
+            margin-inline: 0;
+            padding-block: 0.5rem;
+            padding-inline: 0.75rem;
+            border-radius: var(--gemini-radius-control);
+            background-color: var(--gemini-danger-bg);
+            color: var(--gemini-danger-fg);
+            font-size: 0.8125rem;
+            line-height: 1.4;
+        }
+
+        .gemini-input-error {
+            margin: 0;
+            padding-block: 0.45rem;
+            padding-inline: 1.25rem;
+            background-color: var(--gemini-danger-bg);
+            color: var(--gemini-danger-fg);
+            font-size: 0.8125rem;
+            line-height: 1.4;
+            border-block-start: 1px solid color-mix(in oklch, var(--gemini-danger) 30%, transparent);
+            flex-shrink: 0;
+        }
+
+        .gemini-dialog-error[hidden],
+        .gemini-input-error[hidden] {
+            display: none;
+        }
+
         .gemini-btn-row {
             display: flex;
             justify-content: flex-end;
@@ -1208,6 +1242,14 @@
         : createFallbackResultGate();
 
     /**
+     * input-history モジュール（Content Script より先に注入される）
+     * 入力バリデーションと会話履歴の上限管理を担う
+     */
+    const inputHistory = (typeof window !== 'undefined' && window.AltAssistantInputHistory)
+        ? window.AltAssistantInputHistory
+        : null;
+
+    /**
      * image-correlation モジュール（Content Script より先に注入される）
      * srcset・同一URL複数要素・安全なバッジ検索を担う
      */
@@ -1534,6 +1576,42 @@
     }
 
     /**
+     * 入力欄の下に表示するインラインエラー（理由表示）を管理する
+     * 表示時はスクリーンリーダーへ理由を通知し、入力が再開したら自動で消す
+     *
+     * @param {HTMLInputElement|HTMLTextAreaElement} input - 対象の入力要素
+     * @param {HTMLElement} banner - 理由を表示する要素（role は付けず announceAlert と二重読み上げを避ける）
+     * @returns {{ show: (reason: string) => void, clear: () => void }}
+     */
+    function createInputErrorPresenter(input, banner) {
+        const clear = () => {
+            if (!banner.hidden) {
+                banner.hidden = true;
+                banner.textContent = '';
+            }
+            input.removeAttribute('aria-invalid');
+            input.removeAttribute('aria-describedby');
+        };
+
+        const show = (reason) => {
+            banner.textContent = reason;
+            banner.hidden = false;
+            input.setAttribute('aria-invalid', 'true');
+            input.setAttribute('aria-describedby', banner.id);
+            announceAlert(reason);
+            input.focus();
+        };
+
+        input.addEventListener('input', () => {
+            if (inputHistory.validateInstruction(input.value).valid) {
+                clear();
+            }
+        });
+
+        return { show, clear };
+    }
+
+    /**
      * ユーザー指示入力ダイアログを表示
      * @param {Function} onSubmit - 送信時のコールバック
      */
@@ -1565,6 +1643,11 @@
         textArea.setAttribute('spellcheck', 'false');
         textArea.setAttribute('aria-label', 'AIへの指示プロンプト入力欄');
 
+        const errorBanner = document.createElement('p');
+        errorBanner.id = 'gemini-instruction-error';
+        errorBanner.className = 'gemini-dialog-error';
+        errorBanner.hidden = true;
+
         const btnContainer = document.createElement('div');
         btnContainer.className = 'gemini-btn-row';
 
@@ -1584,6 +1667,7 @@
         dialog.appendChild(titleElement);
         dialog.appendChild(description);
         dialog.appendChild(textArea);
+        dialog.appendChild(errorBanner);
         dialog.appendChild(btnContainer);
 
         getShadowRoot().appendChild(dialog);
@@ -1594,10 +1678,16 @@
 
         // 先行リクエストがあればここで null 解決し、待機中の sendResponse を解放する
         const requestToken = pendingInstruction.begin(onSubmit);
+        const instructionError = createInputErrorPresenter(textArea, errorBanner);
 
         const performSubmit = () => {
-            const promptVal = textArea.value.trim();
-            if (!promptVal) return;
+            const validation = inputHistory.validateInstruction(textArea.value);
+            if (!validation.valid) {
+                instructionError.show(validation.error);
+                return;
+            }
+            instructionError.clear();
+            const promptVal = validation.value;
 
             const settled = pendingInstruction.settle(requestToken, {
                 prompt: promptVal,
@@ -1697,6 +1787,11 @@
         chatHistory.id = 'gemini-chat-history';
         chatHistory.className = 'gemini-chat-history';
 
+        const chatErrorBanner = document.createElement('p');
+        chatErrorBanner.id = 'gemini-chat-input-error';
+        chatErrorBanner.className = 'gemini-input-error';
+        chatErrorBanner.hidden = true;
+
         // 入力エリア
         const inputArea = document.createElement('div');
         inputArea.className = 'gemini-input-area';
@@ -1749,21 +1844,32 @@
             }
         });
 
-        const performSend = () => {
-            const instruction = instructionInput.value.trim();
-            if (!instruction || instructionInput.disabled) return;
+        const chatInputError = createInputErrorPresenter(instructionInput, chatErrorBanner);
 
-            // 履歴コンテキストを収集
+        const performSend = () => {
+            if (instructionInput.disabled) return;
+
+            const validation = inputHistory.validateInstruction(instructionInput.value);
+            if (!validation.valid) {
+                chatInputError.show(validation.error);
+                return;
+            }
+            chatInputError.clear();
+            const instruction = validation.value;
+
+            // 履歴コンテキストを上限内で収集
             const historyBubbles = chatHistory.querySelectorAll('.chat-bubble-user, .chat-bubble-ai');
-            const historyString = Array.from(historyBubbles).map(bubble => {
+            const historyEntries = Array.from(historyBubbles).map((bubble) => {
                 if (bubble.classList.contains('chat-bubble-user')) {
-                    return `- PREVIOUS_USER_REQUEST: ${bubble.textContent}`;
-                } else if (bubble.classList.contains('chat-bubble-ai')) {
-                    const aiText = bubble.querySelector('textarea') ? bubble.querySelector('textarea').value : bubble.textContent;
-                    return `- PREVIOUS_AI_RESPONSE: ${aiText}`;
+                    return { role: 'user', text: bubble.textContent || '' };
                 }
-                return '';
-            }).join('\n');
+                if (bubble.classList.contains('chat-bubble-ai')) {
+                    const aiText = bubble.querySelector('textarea') ? bubble.querySelector('textarea').value : bubble.textContent;
+                    return { role: 'ai', text: aiText || '' };
+                }
+                return null;
+            }).filter(Boolean);
+            const historyString = inputHistory.buildBoundedHistory(historyEntries);
 
             addMessageToChat(instruction, 'user', applyAltTextToImage);
             addMessageToChat('生成中…', 'loading', applyAltTextToImage);
@@ -1813,6 +1919,7 @@
 
         dialog.appendChild(header);
         dialog.appendChild(chatHistory);
+        dialog.appendChild(chatErrorBanner);
         dialog.appendChild(inputArea);
         getShadowRoot().appendChild(dialog);
 

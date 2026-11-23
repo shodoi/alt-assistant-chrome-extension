@@ -12,7 +12,7 @@ Work from `.scratch/alt-assistant-fixes/issues/` (local, gitignored). Each `NN-*
 
 ## Runtime loading
 
-`utils/handshake.js` injects `['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'content.js']` into the page.
+`utils/handshake.js` injects `['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'utils/input-history.js', 'content.js']` into the page.
 `utils/*.js` not in that list run only in `background.js` (`importScripts`) or in tests.
 `test/runtime-wiring.test.js` enforces that any `window.AltAssistant*` referenced in `content.js` is in that injection list.
 

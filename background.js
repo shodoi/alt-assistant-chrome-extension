@@ -1,7 +1,7 @@
 // background.js
 
 // ユーティリティスクリプトの同期読み込み (Service Worker)
-importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js', 'utils/image-extractor.js', 'utils/image-fallback.js', 'utils/command-handler.js', 'utils/generation-state.js');
+importScripts('utils/validation.js', 'utils/handshake.js', 'utils/retry.js', 'utils/image-extractor.js', 'utils/image-fallback.js', 'utils/command-handler.js', 'utils/generation-state.js', 'utils/input-history.js');
 
 // --- 定数定義 (Constants) ---
 /** 使用するGeminiモデルID（高速かつ高性能な最新モデル） */
@@ -86,6 +86,27 @@ function createRequestId() {
 }
 
 /**
+ * ユーザー指示を検証し、前後の空白を除去した値を返す
+ * 空または空白のみの場合は、UI でそのまま案内できる分類済みエラーを投げる
+ *
+ * @param {string} rawInstruction - 検証対象の指示（初回 Instruction / 再生成の追加指示）
+ * @returns {string} 前後の空白を除去した指示
+ * @throws {Error} 空または空白のみの場合（classified 付き）
+ */
+function requireInstruction(rawInstruction) {
+    const validation = AltAssistantInputHistory.validateInstruction(rawInstruction);
+    if (validation.valid) return validation.value;
+
+    const invalidInstructionError = new Error(validation.error);
+    invalidInstructionError.classified = {
+        type: 'CLIENT_ERROR',
+        userMessage: validation.error,
+        retryable: false
+    };
+    throw invalidInstructionError;
+}
+
+/**
  * Altテキスト生成の全プロセスを開始するメイン関数。
  * @param {string} imageUrl - 対象の画像URL
  * @param {number} tabId - タブのID
@@ -117,8 +138,8 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
         let userChoice;
         let finalPrompt;
 
-        // 初回生成時 (contextが空の場合)
-        if (!context.history) {
+        // 初回生成時（history が空文字でも再生成は初回扱いにしない）
+        if (!AltAssistantInputHistory.isRegenerationContext(context)) {
             userChoice = await chrome.tabs.sendMessage(tabId, {
                 action: "showInstructionDialog",
                 imageUrl: effectiveImageUrl,
@@ -127,7 +148,7 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
                 frameId: frameId
             }, { frameId: frameId });
             if (userChoice) {
-                finalPrompt = userChoice.prompt;
+                finalPrompt = AltAssistantInputHistory.createInitialPrompt(requireInstruction(userChoice.prompt));
                 if (userChoice.resolvedImageUrl && validateImageUrl(userChoice.resolvedImageUrl).valid) {
                     effectiveImageUrl = userChoice.resolvedImageUrl;
                 }
@@ -137,8 +158,11 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
             }
         } else {
             // 再生成時 (文脈あり)
-            finalPrompt = createRegenerationPrompt(context); // 文脈からプロンプトを生成
-            userChoice = { 
+            finalPrompt = AltAssistantInputHistory.createRegenerationPrompt({
+                ...context,
+                additionalInstruction: requireInstruction(context.additionalInstruction)
+            });
+            userChoice = {
                 prompt: finalPrompt,
                 isRegeneration: true
             };
@@ -294,32 +318,6 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
     }
 }
 
-/**
- * 再生成用の、より簡潔で対話ログに焦点を当てたプロンプトを作成する。
- * @param {object} context - 会話の文脈情報
- * @param {string} context.history - これまでの会話履歴文字列 (最新のユーザー入力を含む)
- * @param {string} context.additionalInstruction - ユーザーからの最後の指示 (入力フィールドの内容)
- * @returns {string} - 新しいプロンプト文字列
- */
-function createRegenerationPrompt(context) {
-    const prompt = `
-# CONVERSATION_LOG
-${context.history}
-
-# CURRENT_USER_REQUEST
-${context.additionalInstruction}
-
-# YOUR_TASK
-Based on the image and the above CONVERSATION_LOG, generate the single, final, complete alt text that fulfills the CURRENT_USER_REQUEST.
-Your output must be ONLY the alt text. Do not include any other text.
-Output in Japanese.
-
-# FINAL_ALT_TEXT:
-`;
-    return prompt.trim();
-}
-
-
 // --- イベントリスナー --- //
 
 /**
@@ -418,6 +416,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 { 
                     history: message.history, 
                     additionalInstruction: message.additionalInstruction,
+                    isRegeneration: true,
                     requestId: message.requestId
                 }
             );
