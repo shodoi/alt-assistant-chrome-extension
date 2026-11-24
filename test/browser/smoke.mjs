@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { STATUS_AUTO_HIDE_MS } from '../../options.js';
 
 const edgePath = process.argv[2];
 const rawExtPath = process.argv[3];
@@ -16,6 +17,9 @@ if (!edgePath || !rawExtPath) {
   process.exit(2);
 }
 const extPath = path.resolve(rawExtPath);
+
+// 成功メッセージの自動非表示 + 余裕（options.js の実装と同期させる）
+const OPTIONS_STATUS_RACE_WAIT_MS = STATUS_AUTO_HIDE_MS + 300;
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -1089,6 +1093,71 @@ try {
     optionsTimeoutState.buttonText === 'APIキーを保存' &&
     optionsTimeoutState.statusText.includes('タイムアウト')
   );
+
+  // #10-1: 成功表示の直後に検証エラーが起きても、成功用タイマーがエラーを消さない
+  await optionsClient.evaluate(`(() => {
+    globalThis.__altAssistantTimeouts = { apiKeyValidationMs: 5000 };
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
+    document.getElementById('geminiApiKey').value = 'smoke-success-key';
+    document.getElementById('saveButton').click();
+    return true;
+  })()`);
+  await waitFor(
+    () => optionsClient.evaluate(`(() => {
+      const status = document.getElementById('statusMessage');
+      return Boolean(status && status.textContent.includes('保存されました'));
+    })()`),
+    { label: 'options success message' }
+  );
+  await optionsClient.evaluate(`(() => {
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: { message: 'API key not valid' } })
+    });
+    document.getElementById('geminiApiKey').value = 'smoke-invalid-key';
+    document.getElementById('saveButton').click();
+    return true;
+  })()`);
+  await waitFor(
+    () => optionsClient.evaluate(`(() => {
+      const status = document.getElementById('statusMessage');
+      return Boolean(status && status.textContent.includes('APIキーが無効'));
+    })()`),
+    { label: 'options error message after success' }
+  );
+  // 成功メッセージの自動非表示 (3秒) を超えても、後から出したエラーが残ること
+  await sleep(OPTIONS_STATUS_RACE_WAIT_MS);
+  results.steps.optionsSuccessErrorRace = await optionsClient.evaluate(`(() => {
+    const status = document.getElementById('statusMessage');
+    return Boolean(status && status.style.display === 'block' && status.textContent.includes('APIキーが無効'));
+  })()`);
+
+  // #10-2: 通信失敗（オフライン相当）は「APIキーが無効」ではなく通信エラーとして表示する
+  await optionsClient.evaluate(`(() => {
+    globalThis.fetch = async () => {
+      throw new TypeError('Failed to fetch');
+    };
+    document.getElementById('geminiApiKey').value = 'smoke-offline-key';
+    document.getElementById('saveButton').click();
+    return true;
+  })()`);
+  const optionsOfflineState = await waitFor(
+    () => optionsClient.evaluate(`(() => {
+      const status = document.getElementById('statusMessage');
+      const btn = document.getElementById('saveButton');
+      if (!status || !btn) return null;
+      if (btn.disabled || !status.textContent.includes('ネットワークエラー')) return null;
+      return { statusText: status.textContent, disabled: btn.disabled };
+    })()`),
+    { label: 'options offline network error' }
+  );
+  results.steps.optionsOfflineNetworkError = Boolean(
+    optionsOfflineState &&
+    optionsOfflineState.disabled === false &&
+    optionsOfflineState.statusText.includes('ネットワークエラー') &&
+    !optionsOfflineState.statusText.includes('APIキーが無効')
+  );
   optionsClient.ws.close();
 
   // --- #08 6: 復帰先の画像がDOMから消えても、代替要素へフォーカスを戻す ---
@@ -1339,6 +1408,12 @@ try {
   }
   if (results.steps.optionsValidationTimedOut !== true) {
     results.errors.push('options API key validation did not timeout and recover saveButton');
+  }
+  if (results.steps.optionsSuccessErrorRace !== true) {
+    results.errors.push('success message auto-hide timer erased a later validation error');
+  }
+  if (results.steps.optionsOfflineNetworkError !== true) {
+    results.errors.push('offline validation was not shown as a network error');
   }
   if (results.steps.blankInstructionRejected !== true) {
     results.errors.push('blank instruction was not rejected with visible reason');
