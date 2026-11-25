@@ -81,13 +81,26 @@ const PAGE_HTML = `<!doctype html>
   <img id="blob-target" alt="" width="32" height="32">
   <img id="gif-target" src="/anim.gif" alt="" width="16" height="16">
   <button id="page-button" type="button" style="position: fixed; right: 24px; bottom: 24px; z-index: 1;">page button</button>
+  <div style="margin-top: 40px"><iframe id="frame" src="/frame.html" width="640" height="480" title="iframe smoke"></iframe></div>
   <script>
     window.__pageButtonClicks = 0;
     document.getElementById('page-button').addEventListener('click', () => { window.__pageButtonClicks += 1; });
   </script>
 </body></html>`;
 
+const FRAME_HTML = `<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>Alt Assistant iframe smoke</title></head>
+<body>
+  <h1>iframe image smoke test</h1>
+  <img id="frame-target" src="/frame-pixel.png" alt="" width="64" height="64">
+</body></html>`;
+
 const imageServer = http.createServer((req, res) => {
+  if (req.url === '/frame.html') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(FRAME_HTML);
+    return;
+  }
   if (req.url === '/logo.svg') {
     const svgBuf = Buffer.from(QUOTED_SVG, 'utf8');
     res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Content-Length': svgBuf.length });
@@ -102,6 +115,7 @@ const imageServer = http.createServer((req, res) => {
   if (
     req.url === '/pixel.png' ||
     req.url === '/pixel-2.png' ||
+    req.url === '/frame-pixel.png' ||
     req.url === '/same.png' ||
     req.url === '/srcset-fallback.png' ||
     req.url === '/srcset-displayed.png'
@@ -117,6 +131,7 @@ await new Promise((resolve) => imageServer.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${imageServer.address().port}`;
 const imageUrl = `${origin}/pixel.png`;
 const imageUrl2 = `${origin}/pixel-2.png`;
+const frameImageUrl = `${origin}/frame-pixel.png`;
 const sameUrl = `${origin}/same.png`;
 const srcsetFallbackUrl = `${origin}/srcset-fallback.png`;
 const srcsetDisplayedUrl = `${origin}/srcset-displayed.png`;
@@ -125,7 +140,7 @@ const svgUrl = `${origin}/logo.svg`;
 const gifUrl = `${origin}/anim.gif`;
 
 /** スモーク全体で想定する Gemini API 呼び出し回数（シーン追加時はここだけ更新する） */
-const EXPECTED_TOTAL_GEMINI_CALLS = 17;
+const EXPECTED_TOTAL_GEMINI_CALLS = 20;
 
 const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'alt-smoke-profile-'));
 const debugPort = 19000 + Math.floor(Math.random() * 900);
@@ -150,6 +165,15 @@ chrome.stderr.on('data', (d) => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Shadow Root 内の最新 AI テキストを読む式（minCount 件以上ある場合のみ） */
+const lastAiTextExpression = (shadowExpr, minCount = 1) => `(() => {
+  const r = ${shadowExpr};
+  const dialog = r && r.getElementById('gemini-alt-dialog');
+  const areas = dialog ? [...dialog.querySelectorAll('.chat-bubble-ai textarea')] : [];
+  return areas.length >= ${minCount} ? areas[areas.length - 1].value : null;
+})()`;
+
 async function waitFor(fn, { timeout = 15000, interval = 200, label = 'condition' } = {}) {
   const deadline = Date.now() + timeout;
   let lastErr;
@@ -1097,6 +1121,122 @@ try {
     structuredErrorDialog.hasOptionsBtn === false;
   await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-error-dialog .gemini-btn-warning')?.click(); return true; })()`);
 
+  // --- #02: iframe 内の画像でも Instruction → 生成 → 再生成 → エラーが完結する ---
+  const frameShadowExpr = `document.getElementById('frame')?.contentDocument?.getElementById('gemini-alt-assistant-host')?.shadowRoot`;
+  const frameDocExpr = `document.getElementById('frame')?.contentDocument`;
+
+  const iframeFrameId = await waitFor(async () => {
+    const frames = await swClient.evaluate(`
+      chrome.scripting.executeScript({
+        target: { tabId: ${tabId}, allFrames: true },
+        func: () => location.pathname
+      }).then((results) => results.map((r) => ({ frameId: r.frameId, path: r.result })))
+    `, { awaitPromise: true });
+    const match = Array.isArray(frames) ? frames.find((f) => f.path === '/frame.html') : null;
+    return match ? match.frameId : null;
+  }, { label: 'iframe frame id' });
+  results.steps.iframeFrameId = iframeFrameId;
+
+  const callsBeforeIframe = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  await swClient.evaluate(`
+    globalThis.__smoke.geminiScriptedResponses = [
+      { status: 200, body: { candidates: [{ content: { parts: [{ text: 'iframe初回生成テキスト' }] } }] } }
+    ];
+    true;
+  `);
+  await swClient.evaluate(
+    `startGenerationProcess(${JSON.stringify(frameImageUrl)}, ${tabId}, ${iframeFrameId}, 'frame-target'); 'started'`
+  );
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${frameShadowExpr}; return !!(r && r.getElementById('gemini-instruction-dialog')); })()`),
+    { label: 'iframe instruction dialog' }
+  );
+  results.steps.iframeInstructionDialog = true;
+
+  // iframe 宛てメッセージはトップレベル文書にダイアログを出さない
+  results.steps.iframeTopLevelUnaffected = await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    return !r || (!r.getElementById('gemini-instruction-dialog') && !r.getElementById('gemini-alt-dialog'));
+  })()`);
+
+  await pageClient.evaluate(`(() => {
+    const r = ${frameShadowExpr};
+    r.getElementById('gemini-prompt-textarea').value = 'iframe用の指示';
+    r.getElementById('submit-auto-model').click();
+    return true;
+  })()`);
+
+  const iframeFirstText = await waitFor(
+    () => pageClient.evaluate(lastAiTextExpression(frameShadowExpr)),
+    { label: 'iframe generated alt text' }
+  );
+  results.steps.iframeChatShowsResult = iframeFirstText === 'iframe初回生成テキスト';
+
+  // 同じ iframe 内のチャットから再生成できる
+  await pageClient.evaluate(`(() => {
+    const r = ${frameShadowExpr};
+    const dialog = r.getElementById('gemini-alt-dialog');
+    dialog.querySelector('#gemini-instruction-input').value = 'もっと短く';
+    dialog.querySelector('.gemini-input-area button').click();
+    return true;
+  })()`);
+  const iframeRegenerated = await waitFor(
+    () => pageClient.evaluate(lastAiTextExpression(frameShadowExpr, 2)),
+    { label: 'iframe regenerated alt text' }
+  );
+  const callsAfterIframeRegen = await swClient.evaluate('globalThis.__smoke.geminiCalls');
+  results.steps.iframeRegenerationSucceeded =
+    iframeRegenerated === '再生成後の代替テキスト' && (callsAfterIframeRegen - callsBeforeIframe) === 2;
+
+  // 適用すると iframe 内の画像の alt が更新される
+  await pageClient.evaluate(`(() => {
+    const r = ${frameShadowExpr};
+    const dialog = r.getElementById('gemini-alt-dialog');
+    const applyButtons = [...dialog.querySelectorAll('.gemini-icon-btn.is-apply')];
+    applyButtons[applyButtons.length - 1].click();
+    return true;
+  })()`);
+  results.steps.iframeAltApplied = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const doc = ${frameDocExpr};
+      const img = doc && doc.getElementById('frame-target');
+      return Boolean(img && img.alt === ${JSON.stringify(iframeRegenerated)});
+    })()`),
+    { label: 'iframe image alt applied' }
+  );
+
+  // 生成失敗時のエラー通知も iframe 内に出る
+  await swClient.evaluate(`
+    globalThis.__smoke.geminiScriptedResponses = [
+      { status: 401, message: 'API key not valid' }
+    ];
+    true;
+  `);
+  await swClient.evaluate(
+    `startGenerationProcess(${JSON.stringify(frameImageUrl)}, ${tabId}, ${iframeFrameId}, 'frame-target'); 'started'`
+  );
+  await waitFor(
+    () => pageClient.evaluate(`(() => { const r = ${frameShadowExpr}; return !!(r && r.getElementById('gemini-instruction-dialog')); })()`),
+    { label: 'iframe instruction dialog for 401' }
+  );
+  await pageClient.evaluate(`(() => { const r = ${frameShadowExpr}; r.getElementById('submit-auto-model').click(); return true; })()`);
+  const iframeErrorInfo = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${frameShadowExpr};
+      const errDialog = r && r.getElementById('gemini-error-dialog');
+      if (!errDialog) return null;
+      return {
+        desc: errDialog.querySelector('.gemini-dialog-description')?.textContent || '',
+        hasOptionsBtn: [...errDialog.querySelectorAll('button')].some((b) => b.textContent.includes('設定を開く'))
+      };
+    })()`),
+    { label: 'iframe error dialog' }
+  );
+  results.steps.iframeErrorVisible = Boolean(
+    iframeErrorInfo && iframeErrorInfo.hasOptionsBtn && iframeErrorInfo.desc.includes('APIキー')
+  );
+  await pageClient.evaluate(`(() => { const r = ${frameShadowExpr}; r.querySelector('#gemini-error-dialog .gemini-btn-cancel')?.click(); return true; })()`);
+
   // #07-5: options.html の API キー検証にもタイムアウトが適用され UI が復帰する
   await swClient.evaluate(`chrome.runtime.openOptionsPage(); true;`);
   const optionsTarget = await waitFor(async () => {
@@ -1471,6 +1611,24 @@ try {
   }
   if (results.steps.emptyHistoryRegenerationSucceeded !== true) {
     results.errors.push('regeneration with empty history fell back to initial instruction dialog or failed');
+  }
+  if (results.steps.iframeInstructionDialog !== true) {
+    results.errors.push('iframe image did not show the instruction dialog');
+  }
+  if (results.steps.iframeChatShowsResult !== true) {
+    results.errors.push('iframe chat did not show the generated alt text');
+  }
+  if (results.steps.iframeTopLevelUnaffected !== true) {
+    results.errors.push('iframe-targeted generation opened a dialog in the top-level document');
+  }
+  if (results.steps.iframeRegenerationSucceeded !== true) {
+    results.errors.push('iframe image regeneration did not complete');
+  }
+  if (results.steps.iframeAltApplied !== true) {
+    results.errors.push('iframe image alt attribute was not updated');
+  }
+  if (results.steps.iframeErrorVisible !== true) {
+    results.errors.push('iframe generation failure did not show an error dialog inside the frame');
   }
 
   if (results.steps.firstAltText !== 'スモークテスト用の代替テキスト') {

@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { ensureContentScriptReady } = require('../utils/handshake.js');
+const { CONTENT_SCRIPT_FILES, ensureContentScriptReady } = require('../utils/handshake.js');
 
 describe('ensureContentScriptReady (シームB: PINGハンドシェイク & 動的ロード制御)', () => {
     it('Content Scriptが既に存在する場合、executeScriptを呼ばずに即座に成功すること（二重注入防止）', async () => {
@@ -49,7 +49,7 @@ describe('ensureContentScriptReady (シームB: PINGハンドシェイク & 動�
         const mockExecuteScript = async (params) => {
             executeScriptCalled = true;
             assert.deepEqual(params.target, { tabId: 100 });
-            assert.deepEqual(params.files, ['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'utils/input-history.js', 'utils/error-presentation.js', 'content.js']);
+            assert.deepEqual(params.files, [...CONTENT_SCRIPT_FILES]);
         };
 
         await ensureContentScriptReady(100, 0, {

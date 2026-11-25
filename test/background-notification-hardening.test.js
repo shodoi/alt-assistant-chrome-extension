@@ -228,3 +228,58 @@ describe('シームF: background 通知の防御性', () => {
         assert.equal(errorMsg.message.errorDetails?.type, 'RATE_LIMIT');
     });
 });
+
+describe('シームG: iframe 宛てコンテキストメニューの配線', () => {
+    function captureGenerationCalls(context) {
+        const calls = [];
+        context.startGenerationProcess = (...args) => {
+            calls.push(args);
+            return Promise.resolve();
+        };
+        return calls;
+    }
+
+    it('右クリックされた iframe の frameId を生成プロセスへ渡すこと', async () => {
+        const { context, listeners } = loadBackgroundHarness();
+        const calls = captureGenerationCalls(context);
+
+        listeners.onClicked(
+            {
+                menuItemId: 'instructWithGemini',
+                srcUrl: 'https://example.com/frame.png',
+                frameId: 7,
+                targetElementId: 'frame-target'
+            },
+            { id: 42 }
+        );
+        await Promise.resolve();
+
+        assert.deepEqual(calls, [['https://example.com/frame.png', 42, 7, 'frame-target']]);
+    });
+
+    it('数値のタブIDを持たない送信元では生成を開始しないこと', async () => {
+        const { context, listeners } = loadBackgroundHarness();
+        const calls = captureGenerationCalls(context);
+
+        listeners.onClicked(
+            { menuItemId: 'instructWithGemini', srcUrl: 'https://example.com/a.png', frameId: 7 },
+            { id: 'not-a-number' }
+        );
+        await Promise.resolve();
+
+        assert.equal(calls.length, 0);
+    });
+
+    it('別メニュー項目のクリックでは生成を開始しないこと', async () => {
+        const { context, listeners } = loadBackgroundHarness();
+        const calls = captureGenerationCalls(context);
+
+        listeners.onClicked(
+            { menuItemId: 'otherMenu', srcUrl: 'https://example.com/a.png', frameId: 7 },
+            { id: 42 }
+        );
+        await Promise.resolve();
+
+        assert.equal(calls.length, 0);
+    });
+});

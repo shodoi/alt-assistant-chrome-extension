@@ -12,9 +12,10 @@ Work from `.scratch/alt-assistant-fixes/issues/` (local, gitignored). Each `NN-*
 
 ## Runtime loading
 
-`utils/handshake.js` injects `['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'utils/input-history.js', 'content.js']` into the page.
+`utils/handshake.js` injects `['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'utils/input-history.js', 'utils/error-presentation.js', 'content.js']` into the page (single source: `CONTENT_SCRIPT_FILES`).
 `utils/*.js` not in that list run only in `background.js` (`importScripts`) or in tests.
 `test/runtime-wiring.test.js` enforces that any `window.AltAssistant*` referenced in `content.js` is in that injection list.
+Frame-targeted messages are routed solely by `chrome.tabs.sendMessage(tabId, message, { frameId })`; content scripts must not compare `sender.frameId` (it is absent for extension-sent messages).
 
 ## Browser verification
 

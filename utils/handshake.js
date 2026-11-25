@@ -6,6 +6,18 @@
  */
 
 /**
+ * Content Script 実行に必要な注入ファイル一覧（依存モジュール → 本体の順）
+ * 注入順序と一覧の単一情報源。テストもこの定数を参照する。
+ */
+const CONTENT_SCRIPT_FILES = Object.freeze([
+    'utils/dialog-lifecycle.js',
+    'utils/image-correlation.js',
+    'utils/input-history.js',
+    'utils/error-presentation.js',
+    'content.js'
+]);
+
+/**
  * 指定時間待機するヘルパー関数
  * @param {number} ms - 待機時間（ミリ秒）
  * @returns {Promise<void>}
@@ -83,7 +95,7 @@ async function ensureContentScriptReady(tabId, frameId = 0, options = {}) {
     try {
         await executeScript({
             target,
-            files: ['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'utils/input-history.js', 'utils/error-presentation.js', 'content.js']
+            files: [...CONTENT_SCRIPT_FILES]
         });
     } catch (error) {
         console.warn(`コンテンツスクリプトの動的注入に失敗しました (tabId: ${tabId}, frameId: ${frameId}):`, error);
@@ -106,5 +118,5 @@ async function ensureContentScriptReady(tabId, frameId = 0, options = {}) {
 
 // CommonJS (Node.js テスト用) とブラウザ環境の互換性サポート
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { ensureContentScriptReady, pingTab };
+    module.exports = { CONTENT_SCRIPT_FILES, ensureContentScriptReady, pingTab };
 }

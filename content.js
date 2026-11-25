@@ -822,9 +822,9 @@
         if (!action) {
             return false;
         }
-        if (message.frameId && message.frameId !== sender?.frameId) {
-            return false;
-        }
+        // 配送先の制御は background の chrome.tabs.sendMessage({ frameId }) が担う。
+        // content script 側で sender.frameId と比較してはいけない（拡張機能からの
+        // 送信には sender.frameId が無く、iframe 宛てを破棄してしまう）。
 
         switch (action) {
             case 'ping':
