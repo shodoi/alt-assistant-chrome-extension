@@ -83,7 +83,7 @@ async function ensureContentScriptReady(tabId, frameId = 0, options = {}) {
     try {
         await executeScript({
             target,
-            files: ['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'utils/input-history.js', 'content.js']
+            files: ['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'utils/input-history.js', 'utils/error-presentation.js', 'content.js']
         });
     } catch (error) {
         console.warn(`コンテンツスクリプトの動的注入に失敗しました (tabId: ${tabId}, frameId: ${frameId}):`, error);

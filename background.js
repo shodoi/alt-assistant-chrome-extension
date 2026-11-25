@@ -22,6 +22,9 @@ const JPEG_COMPRESSION_QUALITY = 0.85;
 /** ArrayBufferからBase64への変換時にスタックオーバーフローを防ぐための分割チャンクサイズ（8KB） */
 const BASE64_CHUNK_SIZE = 8192;
 
+/** エラー詳細が欠落している場合に使う、生成失敗の既定案内文 */
+const DEFAULT_GENERATION_ERROR_MESSAGE = 'Altテキストの生成に失敗しました。';
+
 /** 同一画像の Regeneration で画像取得・再圧縮を再利用するための境界付きキャッシュ */
 const preparedImageCache = typeof createPreparedImageCache === 'function'
     ? createPreparedImageCache({ maxEntries: 20 })
@@ -64,6 +67,36 @@ function sendTabMessage(tabId, message, options = {}) {
         // タブ消失時は無視（呼び出し元はUIを保持しない）
     }
     return Promise.resolve({ ok: false });
+}
+
+/**
+ * 送信元メッセージから数値のタブIDを取り出す
+ * 送信元が拡張機能ページ等でタブ情報を持たない場合は null を返す
+ * @param {object|null|undefined} sender
+ * @returns {number|null}
+ */
+function getSenderTabId(sender) {
+    const tabId = sender?.tab?.id;
+    return typeof tabId === 'number' ? tabId : null;
+}
+
+/**
+ * エラー詳細の欠落に耐えながら、UI へ渡す非空のエラー案内文を解決する
+ * @param {any} error - 捕捉した例外（Error・文字列・null 等）
+ * @param {object|null} [classified] - 分類済みエラー情報
+ * @returns {string}
+ */
+function resolveUserFacingErrorMessage(error, classified = null) {
+    if (classified && typeof classified.userMessage === 'string' && classified.userMessage.trim()) {
+        return classified.userMessage;
+    }
+    if (error && typeof error.message === 'string' && error.message.trim()) {
+        return error.message;
+    }
+    if (typeof error === 'string' && error.trim()) {
+        return error;
+    }
+    return DEFAULT_GENERATION_ERROR_MESSAGE;
 }
 
 /**
@@ -203,9 +236,9 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
             }
         }
     } catch (error) {
-        const classified = error.classified || (typeof classifyApiError === 'function' ? classifyApiError(error) : null);
+        const classified = error?.classified || (typeof classifyApiError === 'function' ? classifyApiError(error) : null);
         if (classified && classified.type !== 'UNKNOWN') {
-            console.warn("生成プロセスを中断しました:", classified.type, error.message);
+            console.warn("生成プロセスを中断しました:", classified.type, error?.message);
         } else {
             console.error("生成プロセスでエラーが発生しました:", error);
         }
@@ -216,7 +249,7 @@ async function startGenerationProcess(imageUrl, tabId, frameId, targetElementId,
         sendTabMessage(tabId, {
             action: "errorAltTextGeneration",
             imageUrl: effectiveImageUrl,
-            errorMessage: errorDetails?.userMessage || error.message,
+            errorMessage: resolveUserFacingErrorMessage(error, errorDetails),
             errorDetails,
             errorType: errorDetails?.type || 'UNKNOWN',
             targetElementId: effectiveTargetElementId,
@@ -311,7 +344,7 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
         const classified = typeof classifyApiError === 'function' ? classifyApiError(error) : null;
         return {
             success: false,
-            errorMessage: classified?.userMessage || error.message || "生成に失敗しました。",
+            errorMessage: resolveUserFacingErrorMessage(error, classified),
             errorDetails: classified,
             errorType: classified?.type || 'UNKNOWN'
         };
@@ -322,15 +355,21 @@ async function generateAltText(imageUrl, promptText, tabId, frameId, targetEleme
 
 /**
  * APIキーの有無に応じてコンテキストメニューの状態を更新します。
+ * メニュー未作成（インストール直後・Service Worker 再起動後など）でも
+ * 未処理の Promise 拒否にしないため、失敗は想定内として警告に留めます。
  */
 async function updateContextMenuState() {
-    const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
-    const hasValidKey = !!geminiApiKey;
-    
-    chrome.contextMenus.update("instructWithGemini", {
-        enabled: hasValidKey,
-        title: hasValidKey ? "Geminiで画像に指示" : "⚠️ APIキーを設定してください"
-    });
+    try {
+        const { geminiApiKey } = await chrome.storage.local.get('geminiApiKey');
+        const hasValidKey = !!geminiApiKey;
+
+        await chrome.contextMenus.update("instructWithGemini", {
+            enabled: hasValidKey,
+            title: hasValidKey ? "Geminiで画像に指示" : "⚠️ APIキーを設定してください"
+        });
+    } catch (error) {
+        console.warn('コンテキストメニューの更新をスキップしました（未作成の可能性）:', error?.message || error);
+    }
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -382,13 +421,17 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
 
 // content.jsからのメッセージリスナー
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    switch (message.action) {
+    const action = message?.action;
+    const senderTabId = getSenderTabId(sender);
+    const senderFrameId = typeof sender?.frameId === 'number' ? sender.frameId : 0;
+
+    switch (action) {
         case "open_options_page":
             chrome.runtime.openOptionsPage();
             sendResponse({ accepted: true });
             break;
         case "start_over":
-            if (!sender.tab) {
+            if (senderTabId === null) {
                 sendResponse({ accepted: false });
                 break;
             }
@@ -396,22 +439,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ accepted: true });
             runGenerationProcess(
                 message.imageUrl, 
-                sender.tab.id, 
-                sender.frameId, 
+                senderTabId, 
+                senderFrameId, 
                 message.targetElementId,
                 { requestId: message.requestId }
             );
             break;
         case "regenerate_with_context":
-            if (!sender.tab) {
+            if (senderTabId === null) {
                 sendResponse({ accepted: false });
                 break;
             }
             sendResponse({ accepted: true });
             runGenerationProcess(
                 message.imageUrl, 
-                sender.tab.id, 
-                sender.frameId, 
+                senderTabId, 
+                senderFrameId, 
                 message.targetElementId, 
                 { 
                     history: message.history, 

@@ -1058,6 +1058,45 @@ try {
     (callsAfter401 - callsBefore401) === 1;
   await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-error-dialog .gemini-btn-cancel').click(); return true; })()`);
 
+  // #11-1: 状態トーストは pointer-events: none で下の要素のクリックを遮らない
+  results.steps.toastDoesNotBlockClicks = await pageClient.evaluate(`(() => {
+    const r = ${shadow};
+    const toast = r && r.querySelector('.gemini-alt-status');
+    if (!toast) return false;
+    return getComputedStyle(toast).pointerEvents === 'none';
+  })()`);
+
+  // #11-2: 構造化された errorType はメッセージ文言より優先される（文言がAPIキーでもレート制限表示）
+  await swClient.evaluate(`
+    chrome.tabs.sendMessage(${tabId}, {
+      action: 'errorAltTextGeneration',
+      imageUrl: ${JSON.stringify(imageUrl)},
+      errorMessage: 'APIキーが無効です',
+      errorType: 'RATE_LIMIT',
+      errorDetails: { type: 'RATE_LIMIT', userMessage: 'APIキーが無効です' },
+      aiProvider: 'Gemini'
+    }).then(() => true)
+  `, { awaitPromise: true });
+  const structuredErrorDialog = await waitFor(
+    () => pageClient.evaluate(`(() => {
+      const r = ${shadow};
+      const errDialog = r && r.getElementById('gemini-error-dialog');
+      if (!errDialog) return null;
+      return {
+        title: errDialog.querySelector('.gemini-dialog-title-large')?.textContent || '',
+        hasWarningStyle: errDialog.classList.contains('is-warning'),
+        hasOptionsBtn: [...errDialog.querySelectorAll('button')].some((b) => b.textContent.includes('設定を開く'))
+      };
+    })()`),
+    { label: 'structured rate-limit dialog' }
+  );
+  results.steps.structuredErrorTypeWinsOverWording =
+    Boolean(structuredErrorDialog) &&
+    structuredErrorDialog.hasWarningStyle === true &&
+    structuredErrorDialog.title.includes('利用制限') &&
+    structuredErrorDialog.hasOptionsBtn === false;
+  await pageClient.evaluate(`(() => { const r = ${shadow}; r.querySelector('#gemini-error-dialog .gemini-btn-warning')?.click(); return true; })()`);
+
   // #07-5: options.html の API キー検証にもタイムアウトが適用され UI が復帰する
   await swClient.evaluate(`chrome.runtime.openOptionsPage(); true;`);
   const optionsTarget = await waitFor(async () => {
@@ -1357,6 +1396,12 @@ try {
   }
   if (results.steps.liveRegionAnnouncesError !== true) {
     results.errors.push('error state was not announced in the assertive live region');
+  }
+  if (results.steps.toastDoesNotBlockClicks !== true) {
+    results.errors.push('status toast intercepted pointer events instead of letting clicks through');
+  }
+  if (results.steps.structuredErrorTypeWinsOverWording !== true) {
+    results.errors.push('structured error type did not win over error message wording');
   }
   if (results.steps.supersededInstructionCancelled !== true) {
     results.errors.push('superseded instruction request was not cancelled (possible hang)');

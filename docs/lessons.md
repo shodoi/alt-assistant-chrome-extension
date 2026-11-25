@@ -2,7 +2,7 @@
 
 ## 1. ライブ実装とテスト専用実装を区別する
 
-- `utils/handshake.js` がページへ注入するのは `['utils/dialog-lifecycle.js', 'content.js']` のみ。
+- `utils/handshake.js` がページへ注入するのは `['utils/dialog-lifecycle.js', 'utils/image-correlation.js', 'utils/input-history.js', 'utils/error-presentation.js', 'content.js']`。
 - `utils/*.js` の多くは `background.js`（`importScripts`）または単体テスト専用であり、コンテンツスクリプト実行時にはページ上に存在しない。
 - `content.js` から `window.AltAssistant*` を条件参照したまま放置すると、「テストでは通るが本番ブラウザでは別のインライン分岐が動く」乖離が生まれる。
 - **対策**: `content.js` に未注入グローバルへの参照を残さず、`test/runtime-wiring.test.js` で注入リストとの整合を機械的に検証する。

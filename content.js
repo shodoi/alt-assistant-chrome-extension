@@ -637,6 +637,8 @@
             color: oklch(0.98 0 none);
             backdrop-filter: blur(8px);
             -webkit-backdrop-filter: blur(8px);
+            /* 表示専用のトースト: 下の要素のクリックを妨げない */
+            pointer-events: none;
         }
 
         .gemini-alt-status.is-loading {
@@ -816,11 +818,15 @@
 
     // background.js からのメッセージをリッスン
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        if (message.frameId && message.frameId !== sender.frameId) {
+        const action = message?.action;
+        if (!action) {
+            return false;
+        }
+        if (message.frameId && message.frameId !== sender?.frameId) {
             return false;
         }
 
-        switch (message.action) {
+        switch (action) {
             case 'ping':
                 // Service Worker からの疎通確認（ハンドシェイク）に即座に応答
                 sendResponse({ status: 'ok', pong: true });
@@ -1256,6 +1262,19 @@
     const imageCorrelation = (typeof window !== 'undefined' && window.AltAssistantImageCorrelation)
         ? window.AltAssistantImageCorrelation
         : null;
+
+    /**
+     * error-presentation モジュール（Content Script より先に注入される）
+     * 構造化されたエラー種別から表示カテゴリを解決する
+     */
+    const errorPresentation = (typeof window !== 'undefined' && window.AltAssistantErrorPresentation)
+        ? window.AltAssistantErrorPresentation
+        : null;
+
+    /** エラー表示カテゴリの語彙（error-presentation モジュールと共有する単一定義） */
+    const errorCategories = errorPresentation
+        ? errorPresentation.ERROR_CATEGORY
+        : Object.freeze({ GENERIC: 'GENERIC' });
 
     const correlation = imageCorrelation
         ? imageCorrelation.createCorrelationRegistry({
@@ -2191,62 +2210,40 @@
             }
         };
 
-        // エラー種別の判定 (構造化type優先、未分類/未指定時のみメッセージ文字列解析へフォールバック)
-        const hasExplicitType = Boolean(errorType && errorType !== 'UNKNOWN');
-        const isRateLimit = errorType === 'RATE_LIMIT' || (!hasExplicitType && (
-            userMsg.includes('429') ||
-            userMsg.includes('rate limit') ||
-            userMsg.includes('quota exceeded') ||
-            userMsg.includes('利用制限') ||
-            userMsg.includes('レート制限') ||
-            userMsg.includes('Resource has been exhausted')
-        ));
+        // エラー種別の判定は構造化された種別を優先し、未分類時のみ文言解析へフォールバックする
+        // 文言に依存する分類は utils/error-presentation.js に集約し、ここでは結果だけを使う
+        if (!errorPresentation) {
+            console.warn('error-presentation モジュールが未注入のため、エラー表示を汎用にフォールバックしました。');
+        }
+        const errorCategory = errorPresentation
+            ? errorPresentation.resolveErrorCategory({
+                errorType,
+                userMessage: userMsg,
+                isCorsBlocked: message.isCorsBlocked
+            })
+            : errorCategories.GENERIC;
 
-        const isApiKeyError = errorType === 'API_KEY_INVALID' || (!hasExplicitType && (
-            userMsg.includes('API key') ||
-            userMsg.includes('APIキー') ||
-            userMsg.includes('Invalid API key') ||
-            userMsg.includes('401') ||
-            userMsg.includes('403')
-        ));
-
-        const isTimeoutError = errorType === 'TIMEOUT';
-        const isServerError = errorType === 'SERVER_ERROR';
-
-        const isNetworkError = errorType === 'NETWORK_ERROR' || (!hasExplicitType && (
-            userMsg.includes('Failed to fetch') ||
-            userMsg.includes('ネットワーク') ||
-            userMsg.includes('通信')
-        ));
-
-        const isCorsBlocked = errorType === 'CORS_RESTRICTED' ||
-            message.isCorsBlocked || (!hasExplicitType && (
-            userMsg.includes('CORS') ||
-            userMsg.includes('セキュリティ制限') ||
-            userMsg.includes('クロスオリジン')
-        ));
-
-        if (isRateLimit) {
+        if (errorCategory === errorCategories.RATE_LIMIT) {
             showRateLimitDialog(dialogDetails);
             reportStatus(`${provider}の利用制限到達${modelSuffix}`, 'rate-limit');
             announceAlert(userMsg);
-        } else if (isApiKeyError) {
+        } else if (errorCategory === errorCategories.API_KEY) {
             showApiKeyErrorDialog(dialogDetails);
             reportStatus(`${provider}のAPIキーエラー${modelSuffix}`, 'error');
             announceAlert(userMsg);
-        } else if (isTimeoutError) {
+        } else if (errorCategory === errorCategories.TIMEOUT) {
             showNetworkErrorDialog(dialogDetails);
             reportStatus(`通信タイムアウト${modelSuffix}`, 'error');
             announceAlert(userMsg);
-        } else if (isServerError) {
+        } else if (errorCategory === errorCategories.SERVER) {
             showNetworkErrorDialog(dialogDetails);
             reportStatus(`サーバーエラー${modelSuffix}`, 'error');
             announceAlert(userMsg);
-        } else if (isNetworkError) {
+        } else if (errorCategory === errorCategories.NETWORK) {
             showNetworkErrorDialog(dialogDetails);
             reportStatus(`ネットワーク通信エラー${modelSuffix}`, 'error');
             announceAlert(userMsg);
-        } else if (isCorsBlocked) {
+        } else if (errorCategory === errorCategories.CORS) {
             showGeneralErrorDialog({
                 ...dialogDetails,
                 title: '🚫 画像のセキュリティ（CORS）制限',
