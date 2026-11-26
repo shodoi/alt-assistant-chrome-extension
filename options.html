@@ -400,7 +400,7 @@
     <main class="container">
         <header class="header-section">
             <h1>Gemini Alt Text Generator 設定</h1>
-            <p>この拡張機能を使用するには、<a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer">Google AI Studio</a>または<a href="https://cloud.google.com/vertex-ai" target="_blank" rel="noopener noreferrer">Google Cloud Vertex AI</a>で取得したGemini APIキーが必要です。</p>
+            <p>この拡張機能を使用するには、<a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer">Google AI Studio</a> で取得した Gemini API キーが必要です。</p>
             <p>APIキーはお使いの端末内（<code>chrome.storage.local</code>）にのみ安全に保存され、画像のAltテキスト生成にのみ使用されます。</p>
         </header>
 
@@ -419,9 +419,9 @@
             <div class="model-info-card">
                 <div class="model-info-detail">
                     <span class="model-info-title">Gemini 4 Hydrogen</span>
-                    <p class="model-info-desc">高速かつ高精度な最新世代モデルで Alt テキストを自動生成します。</p>
+                    <p class="model-info-desc">単一の Gemini API モデルで Alt テキストを自動生成します（モデルの自動切替・フォールバックは行いません）。</p>
                 </div>
-                <span class="model-badge">標準モデル</span>
+                <span class="model-badge">単一モデル</span>
             </div>
         </section>
 
@@ -456,14 +456,14 @@
                         <span class="security-item-icon" aria-hidden="true">✓</span>
                         <div class="security-item-content">
                             <span class="security-item-title">端末内ローカルストレージ（chrome.storage.local）への安全な保存</span>
-                            <p class="security-item-desc">入力された API キーはお使いの端末内ローカルストレージ（<code class="inline-code">chrome.storage.local</code>）にのみ暗号化・隔離保存されます。開発者や第三者の外部サーバーに送信・保存されることは一切ありません。</p>
+                            <p class="security-item-desc">入力された API キーはお使いの端末内ローカルストレージ（<code class="inline-code">chrome.storage.local</code>）にのみ保存されます。開発者や第三者サーバーに送信・保存されることは一切ありません。</p>
                         </div>
                     </li>
                     <li class="security-item">
                         <span class="security-item-icon" aria-hidden="true">✓</span>
                         <div class="security-item-content">
                             <span class="security-item-title">Google Gemini API エンドポイントへの直接暗号化通信</span>
-                            <p class="security-item-desc">Alt テキスト生成時は、ブラウザから Google の公式 API エンドポイント（<code class="inline-code">https://generativelanguage.googleapis.com/*</code>）へ HTTPS で直接暗号化通信を行います。プロキシや外部サーバーは介在しません。</p>
+                            <p class="security-item-desc">Alt テキスト生成時は、対象画像を Base64 化した画像データそのものと、指示・会話履歴のテキスト、および API キーを、ブラウザから Google の公式 API エンドポイント（<code class="inline-code">https://generativelanguage.googleapis.com/*</code>）へ HTTPS で直接送信します。送信先は Google のみで、開発者や第三者サーバーは介在しません。</p>
                         </div>
                     </li>
                     <li class="security-item">

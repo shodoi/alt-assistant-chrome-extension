@@ -23,7 +23,7 @@ Load the unpacked extension with Edge 157+ and run the smoke harness. See `BROWS
 
 ## `content.js` map
 
-`content.js` is a single ~96KB IIFE. Navigate by function name, not line number:
+`content.js` is a single ~123KB IIFE. Navigate by function name, not line number:
 
 - Styles: `GEMINI_SHADOW_STYLES`
 - Shadow DOM: `getShadowRoot`, `getGeminiElement`

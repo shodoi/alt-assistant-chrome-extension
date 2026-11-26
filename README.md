@@ -29,7 +29,7 @@ Web ページ上の画像を右クリックするか、キーボードショー�
   - 「Alt適用」ボタンを押すだけで、Web ページ上の画像タグに `alt` 属性を直接反映
 - 🔒 **最小権限の原則 (Least Privilege) に基づく安心設計**:
   - 画像の取得と UI 注入のために http/https サイトへのホスト権限のみを要求し、全タブの URL を常時監視する `tabs` 権限や `webRequest` 権限は要求しません
-  - API キーはお使いの端末内ローカルストレージ（`chrome.storage.local`）にのみ安全に隔離保存
+  - API キーはお使いの端末内の `chrome.storage.local` にのみ保存され、開発者や第三者サーバーへ送信されることはありません
 
 ---
 
@@ -99,8 +99,8 @@ Web ページ上の画像を右クリックするか、キーボードショー�
 ## 🔧 技術仕様とアーキテクチャ
 
 ### 使用モデル
-- **Gemini 4 Hydrogen** (`gemini-4-hydrogen`)
-  - 高速・低レイテンシかつ優れた視覚認識精度を備えた最新 Flash モデル。
+- **Gemini 4 Hydrogen** (`gemini-4-hydrogen`) の単一モデルを使用します（モデルの自動切替・フォールバックは行いません）。
+- 画像データと指示テキストを Gemini API へ送信し、返却されたテキストを Alt テキストとして表示します。
 
 ### ディレクトリ構成
 ```text
@@ -111,23 +111,28 @@ alt-assistant-chrome-extension/
 ├── options.html           # 設定画面 (good-css, セキュリティ説明, ショートカット案内)
 ├── options.js             # 設定画面ロジック (chrome.storage.local)
 ├── utils/                 # コアビジネスロジック (テスタブルな独立モジュール)
-│   ├── handshake.js       # PING/PONG ハンドシェイク (二重注入防止)
-│   ├── validation.js      # 画像URLの安全検証 (javascript: 等の遮断)
-│   ├── a11y-dialog.js     # フォーカストラップ・Escape終了・フォーカス復帰
-│   ├── announcer.js       # スクリーンリーダー向け aria-live 状態通知
-│   ├── retry.js           # 指数バックオフ＋ジッターによる自動再試行
-│   ├── image-extractor.js # SVG/Canvas DOMラスタライズ
-│   ├── image-fallback.js  # Service Worker fetch失敗時のDOM画像救出
-│   ├── command-handler.js # chrome.commands 受信とタブ判定
-│   └── shortcut-trigger.js# フォーカス画像要素のスマート特定
-├── test/                  # Node.js 組み込みテストスイート (計151テスト)
+│   ├── handshake.js        # PING/PONG ハンドシェイク (二重注入防止)
+│   ├── validation.js       # 画像URLの安全検証 (javascript: 等の遮断)
+│   ├── dialog-lifecycle.js # ダイアログのスタック管理・フォーカス復帰・結果破棄
+│   ├── a11y-dialog.js      # フォーカストラップ・Escape終了・フォーカス復帰
+│   ├── announcer.js        # スクリーンリーダー向け aria-live 状態通知
+│   ├── error-presentation.js # エラー種別から表示カテゴリへの変換
+│   ├── generation-state.js # 生成中の操作ロックとエラー復帰
+│   ├── image-correlation.js # 画像要素と生成リクエストの1対1対応付け
+│   ├── input-history.js    # 入力検証・会話履歴の境界・再生成プロンプト生成
+│   ├── retry.js            # 指数バックオフ＋ジッターによる自動再試行
+│   ├── image-extractor.js  # SVG/Canvas DOMラスタライズ
+│   ├── image-fallback.js   # Service Worker fetch失敗時のDOM画像救出
+│   ├── command-handler.js  # chrome.commands 受信とタブ判定
+│   └── shortcut-trigger.js # フォーカス画像要素のスマート特定
+├── test/                  # Node.js 組み込みテストスイート
 └── icons/                 # 拡張機能アイコン
 ```
 
 ### テストの実行
-外部テストフレームワークに依存せず、Node.js 組み込みのテストランナーで全 151 テストを高速実行できます。
+外部テストフレームワークに依存せず、Node.js 組み込みのテストランナーで全テストを高速実行できます。
 ```bash
-node --test test/*.test.js
+node test/check.mjs
 ```
 
 ---
@@ -135,9 +140,10 @@ node --test test/*.test.js
 ## 🔒 セキュリティとプライバシー
 
 1. **端末内ローカルストレージ (`chrome.storage.local`) 保存**:
-   - API キーはお使いのデバイス内にのみ保存され、外部サーバーやサードパーティへ送信されることは一切ありません。
+   - API キーはお使いのデバイス内にのみ保存され、Alt テキスト生成時に Google の API へ送信される以外に外部へ送信されることはありません。
 2. **Google 公式エンドポイントへの直接通信**:
-   - 画像解析リクエストは、ブラウザから Google の公式 API エンドポイント（`https://generativelanguage.googleapis.com/*`）へ HTTPS で直接送信されます。
+   - Alt テキスト生成時は、対象画像を Base64 化した**画像データそのもの**、指示・会話履歴のテキスト、および API キーが、ブラウザから Google の公式 API エンドポイント（`https://generativelanguage.googleapis.com/*`）へ HTTPS で直接送信されます。
+   - 送信先は Google のみで、開発者や第三者サーバーは介在しません。画像データが開発者のサーバーに保存されることはありません。
 3. **最小権限の原則 (Least Privilege Principle)**:
    - 画像の取得と UI 注入のために http/https サイトへのホスト権限のみを要求し、全タブの URL を常時監視する `tabs` 権限や `webRequest` 権限は要求していません。
 
