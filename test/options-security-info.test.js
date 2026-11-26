@@ -43,13 +43,15 @@ describe('シームB: options.html のセキュリティ・プライバシー説
         assert.ok(hasDirectApiMention, 'Google API への直接通信であることが説明されている必要があります');
     });
 
-    it('最小権限の原則（全サイト閲覧権限の不使用、activeTab の活用）についての説明が含まれていること', () => {
-        const hasLeastPrivilegeMention = 
-            htmlContent.includes('最小権限') || 
-            htmlContent.includes('全サイト') ||
-            htmlContent.includes('activeTab') ||
+    it('最小権限の原則（必要最小限の権限のみ）についての説明が含まれていること', () => {
+        const hasLeastPrivilegeMention =
+            htmlContent.includes('最小権限') ||
             htmlContent.includes('閲覧履歴');
-        assert.ok(hasLeastPrivilegeMention, '不要な全サイト閲覧権限を要求しない最小権限設計についての説明が必要です');
+        assert.ok(hasLeastPrivilegeMention, '不要な権限を要求しない最小権限設計についての説明が必要です');
+        assert.ok(
+            !htmlContent.includes('activeTab'),
+            'activeTab は manifest から削除済みのため、説明にも残さない'
+        );
     });
 
     it('安心感を高める視覚的セキュリティカード / バッジのスタイリングクラスが定義されていること', () => {

@@ -78,6 +78,7 @@ function loadBackgroundPromptHarness(overrides = {}) {
                 removeAll: (cb) => cb && cb(),
                 onClicked: noopEvent()
             },
+            action: { onClicked: noopEvent() },
             commands: { onCommand: noopEvent() },
             scripting: { executeScript: async () => [] },
             tabs: {

@@ -12,6 +12,7 @@ function loadBackgroundHarness(overrides = {}) {
     const errorCalls = [];
     const sentMessages = [];
     const listeners = {};
+    const openOptionsPageCalls = { count: 0 };
 
     const createEvent = (name) => ({
         addListener(handler) {
@@ -46,7 +47,12 @@ function loadBackgroundHarness(overrides = {}) {
                 onInstalled: createEvent('onInstalled'),
                 onStartup: createEvent('onStartup'),
                 onMessage: createEvent('onMessage'),
-                openOptionsPage: () => {}
+                openOptionsPage: () => {
+                    openOptionsPageCalls.count += 1;
+                }
+            },
+            action: {
+                onClicked: createEvent('actionOnClicked')
             },
             storage: {
                 local: {
@@ -102,7 +108,7 @@ function loadBackgroundHarness(overrides = {}) {
     const bgCode = fs.readFileSync(path.resolve(rootDir, 'background.js'), 'utf8');
     vm.runInContext(bgCode, context, { filename: 'background.js' });
 
-    return { context, listeners, warnCalls, errorCalls, sentMessages };
+    return { context, listeners, warnCalls, errorCalls, sentMessages, openOptionsPageCalls };
 }
 
 function invokeMessage(listeners, message, sender) {
@@ -281,5 +287,13 @@ describe('シームG: iframe 宛てコンテキストメニューの配線', () 
         await Promise.resolve();
 
         assert.equal(calls.length, 0);
+    });
+
+    it('ツールバーアイコンのクリックで設定画面を開くこと', () => {
+        const { listeners, openOptionsPageCalls } = loadBackgroundHarness();
+
+        listeners.actionOnClicked();
+
+        assert.equal(openOptionsPageCalls.count, 1);
     });
 });

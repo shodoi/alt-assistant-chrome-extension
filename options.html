@@ -469,8 +469,8 @@
                     <li class="security-item">
                         <span class="security-item-icon" aria-hidden="true">✓</span>
                         <div class="security-item-content">
-                            <span class="security-item-title">最小権限の原則（不要な全サイト閲覧権限の不使用）</span>
-                            <p class="security-item-desc">Web 閲覧履歴や全ページのデータを常時読み取る過剰な権限（<code class="inline-code">&lt;all_urls&gt;</code>）は一切要求しません。ユーザーが画像を右クリックした対象タブでのみ一時的に動作する <code class="inline-code">activeTab</code> 権限を主軸としています。</p>
+                            <span class="security-item-title">最小権限の原則（必要最小限の権限のみ）</span>
+                            <p class="security-item-desc">画像の取得と UI 注入のために http/https サイトへのホスト権限のみを要求します。全タブの URL を常時監視する <code class="inline-code">tabs</code> 権限や <code class="inline-code">webRequest</code> 権限は要求しません。</p>
                         </div>
                     </li>
                 </ul>

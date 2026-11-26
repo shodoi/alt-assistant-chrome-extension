@@ -407,6 +407,11 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     }
 });
 
+// ツールバーアイコンから設定画面へ直接導線を張る（ポップアップは使わない）
+chrome.action.onClicked.addListener(() => {
+    chrome.runtime.openOptionsPage();
+});
+
 // キーボードショートカット (chrome.commands / Alt+A) リスナー
 chrome.commands.onCommand.addListener(async (command, tab) => {
     if (typeof handleCommandShortcut === 'function') {
