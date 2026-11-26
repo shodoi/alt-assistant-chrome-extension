@@ -13,6 +13,7 @@ test('Service Worker importScripts 評価シミュレーションテスト', asy
             'utils/validation.js',
             'utils/handshake.js',
             'utils/retry.js',
+            'utils/gemini-client.js',
             'utils/image-extractor.js',
             'utils/image-fallback.js',
             'utils/command-handler.js',
@@ -52,6 +53,7 @@ test('Service Worker importScripts 評価シミュレーションテスト', asy
         assert.equal(typeof context.validateImageUrl, 'function', 'validateImageUrl が定義されていること');
         assert.equal(typeof context.ensureContentScriptReady, 'function', 'ensureContentScriptReady が定義されていること');
         assert.equal(typeof context.calculateBackoffDelay, 'function', 'calculateBackoffDelay が定義されていること');
+        assert.equal(typeof context.AltAssistantGeminiClient?.createGeminiClient, 'function', 'AltAssistantGeminiClient.createGeminiClient が定義されていること');
         assert.equal(typeof context.isSvgImage, 'function', 'isSvgImage が定義されていること');
         assert.equal(typeof context.prepareOptimizedImageWithFallback, 'function', 'prepareOptimizedImageWithFallback が定義されていること');
         assert.equal(typeof context.handleCommandShortcut, 'function', 'handleCommandShortcut が定義されていること');

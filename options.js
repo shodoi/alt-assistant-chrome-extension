@@ -19,6 +19,24 @@ function getRetryUtils() {
 }
 
 /**
+ * Gemini クライアントファクトリを取得する (ブラウザ / Node.js テスト両対応)
+ * @returns {Function|null}
+ */
+function getGeminiClientFactory() {
+    if (typeof globalThis !== 'undefined' && globalThis.AltAssistantGeminiClient?.createGeminiClient) {
+        return globalThis.AltAssistantGeminiClient.createGeminiClient;
+    }
+    if (typeof require === 'function') {
+        try {
+            return require('./utils/gemini-client.js').createGeminiClient;
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+/**
  * オフラインを表す構造化 Error を生成する
  * @returns {Error}
  */
@@ -26,47 +44,6 @@ function createOfflineError() {
     const err = new Error('オフラインのためAPIキーを検証できませんでした。');
     err.isOffline = true;
     return err;
-}
-
-/**
- * 共有リトライユーティリティが読み込めない場合に使う、最小限のタイムアウト実行
- * @param {(signal: AbortSignal|null) => Promise<any>} operation
- * @param {number} timeoutMs
- * @returns {Promise<any>}
- */
-async function runWithLocalTimeout(operation, timeoutMs) {
-    if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-        return operation(null);
-    }
-
-    const controller = typeof AbortController === 'function' ? new AbortController() : null;
-    let timerId = null;
-
-    const timeoutPromise = new Promise((_, reject) => {
-        timerId = setTimeout(() => {
-            if (controller) {
-                controller.abort();
-            }
-            const seconds = Math.max(1, Math.round(timeoutMs / 1000));
-            const err = new Error(`リクエストがタイムアウトしました（${seconds}秒）。`);
-            err.name = 'TimeoutError';
-            err.isTimeout = true;
-            err.timeoutMs = timeoutMs;
-            reject(err);
-        }, timeoutMs);
-    });
-
-    const operationPromise = Promise.resolve()
-        .then(() => operation(controller ? controller.signal : null));
-    operationPromise.catch(() => {});
-
-    try {
-        return await Promise.race([operationPromise, timeoutPromise]);
-    } finally {
-        if (timerId !== null) {
-            clearTimeout(timerId);
-        }
-    }
 }
 
 /**
@@ -86,12 +63,16 @@ async function validateApiKey(apiKey, options = {}) {
     }
 
     const retryUtils = options.retryUtils ?? getRetryUtils();
+    const createClient = getGeminiClientFactory();
+    if (typeof createClient !== 'function') {
+        throw new Error('Gemini クライアントが読み込まれていません。');
+    }
+
     const defaultTimeoutMs = retryUtils?.DEFAULT_TIMEOUT_CONFIG?.apiKeyValidationMs ?? 10000;
     const configuredTimeoutMs = typeof globalThis !== 'undefined'
         ? globalThis.__altAssistantTimeouts?.apiKeyValidationMs
         : undefined;
     const timeoutMs = options.timeoutMs ?? configuredTimeoutMs ?? defaultTimeoutMs;
-    const fetchFn = options.fetch || (typeof fetch === 'function' ? fetch : null);
     const retryOverrides = (typeof globalThis !== 'undefined' && globalThis.__altAssistantRetryOverrides) || {};
     const retryOptions = {
         maxRetries: 2,
@@ -100,58 +81,12 @@ async function validateApiKey(apiKey, options = {}) {
         ...(options.retryOptions || {})
     };
 
-    const requestUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
+    const client = createClient({
+        fetch: options.fetch,
+        retryUtils
+    });
 
-    const executeValidation = async () => {
-        const executeOnce = async (signal) => {
-            const requestInit = signal
-                ? { headers: { 'x-goog-api-key': apiKey }, signal }
-                : { headers: { 'x-goog-api-key': apiKey } };
-            const response = await fetchFn(requestUrl, requestInit);
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                const message = errorData.error?.message || `HTTPエラー: ${response.status}`;
-                const err = new Error(message);
-                err.status = response.status;
-                throw err;
-            }
-            return true;
-        };
-
-        if (retryUtils && typeof retryUtils.runWithTimeout === 'function') {
-            return retryUtils.runWithTimeout(executeOnce, { timeoutMs });
-        }
-        if (retryUtils && typeof retryUtils.fetchWithTimeout === 'function') {
-            const response = await retryUtils.fetchWithTimeout(
-                requestUrl,
-                { headers: { 'x-goog-api-key': apiKey } },
-                { timeoutMs, fetch: fetchFn }
-            );
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                const message = errorData.error?.message || `HTTPエラー: ${response.status}`;
-                const err = new Error(message);
-                err.status = response.status;
-                throw err;
-            }
-            return true;
-        }
-        return runWithLocalTimeout(executeOnce, timeoutMs);
-    };
-
-    if (retryUtils && typeof retryUtils.retryWithBackoff === 'function') {
-        return retryUtils.retryWithBackoff(executeValidation, {
-            ...retryOptions,
-            shouldRetry: (err) => {
-                if (!err || err.isTimeout || err.name === 'TimeoutError') return false;
-                const status = err.status || err.statusCode;
-                return status === 429 || (typeof status === 'number' && status >= 500 && status < 600);
-            }
-        });
-    }
-
-    return executeValidation();
+    return client.validateApiKey({ apiKey, timeoutMs, retryOptions });
 }
 
 /**

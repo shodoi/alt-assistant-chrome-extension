@@ -22,6 +22,9 @@
 ### Shadow DOM
 拡張機能のUIスタイルをホストページのCSSから隔離するためのカプセル化技術。
 
+### Gemini Client
+Gemini API へのリクエスト構築・タイムアウト・リトライ・応答正規化を担うモジュール。Alt テキスト生成と API キー検証の 2 つの入口を持ち、fetch とリトライユーティリティは呼び出し側から注入される。
+
 ### Offscreen Canvas
 Service Worker環境で利用可能なオフスクリーン描画API。DOM要素なしで画像のリサイズ・圧縮を行う。
 
