@@ -2,114 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-
-function loadBackgroundHarness(overrides = {}) {
-    const rootDir = process.cwd();
-    const warnCalls = [];
-    const errorCalls = [];
-    const sentMessages = [];
-    const listeners = {};
-    const openOptionsPageCalls = { count: 0 };
-
-    const createEvent = (name) => ({
-        addListener(handler) {
-            listeners[name] = handler;
-        }
-    });
-
-    const mockConsole = {
-        log: () => {},
-        info: () => {},
-        warn: (...args) => warnCalls.push(args),
-        error: (...args) => errorCalls.push(args)
-    };
-
-    const sandbox = {
-        console: mockConsole,
-        setTimeout,
-        clearTimeout,
-        URL,
-        Blob,
-        Response,
-        Headers,
-        AbortController,
-        atob: globalThis.atob,
-        btoa: globalThis.btoa,
-        createImageBitmap: async () => ({ width: 64, height: 64, close: () => {} }),
-        fetch: overrides.fetch || (async () => {
-            throw new Error('unexpected fetch');
-        }),
-        chrome: {
-            runtime: {
-                onInstalled: createEvent('onInstalled'),
-                onStartup: createEvent('onStartup'),
-                onMessage: createEvent('onMessage'),
-                openOptionsPage: () => {
-                    openOptionsPageCalls.count += 1;
-                }
-            },
-            action: {
-                onClicked: createEvent('actionOnClicked')
-            },
-            storage: {
-                local: {
-                    get: overrides.storageGet || (async () => ({ geminiApiKey: '' })),
-                    remove: async () => {}
-                },
-                sync: {
-                    remove: async () => {}
-                },
-                onChanged: createEvent('onChanged')
-            },
-            contextMenus: {
-                create: () => {},
-                update: overrides.contextMenuUpdate || (() => {}),
-                removeAll: (cb) => cb && cb(),
-                onClicked: createEvent('onClicked')
-            },
-            commands: {
-                onCommand: createEvent('onCommand')
-            },
-            scripting: {
-                executeScript: async () => []
-            },
-            tabs: {
-                query: async () => [],
-                sendMessage: async (tabId, message, options) => {
-                    sentMessages.push({ tabId, message, options });
-                    if (message.action === 'ping') {
-                        return { status: 'ok', pong: true };
-                    }
-                    if (message.action === 'showInstructionDialog') {
-                        if (overrides.onShowInstructionDialog) {
-                            return overrides.onShowInstructionDialog();
-                        }
-                        return { prompt: 'この画像を説明してください' };
-                    }
-                    return { ok: true };
-                }
-            }
-        }
-    };
-
-    sandbox.self = sandbox;
-    sandbox.globalThis = sandbox;
-    sandbox.importScripts = (...relPaths) => {
-        for (const relPath of relPaths) {
-            const code = fs.readFileSync(path.resolve(rootDir, relPath), 'utf8');
-            vm.runInContext(code, context, { filename: relPath });
-        }
-    };
-
-    const context = vm.createContext(sandbox);
-    const bgCode = fs.readFileSync(path.resolve(rootDir, 'background.js'), 'utf8');
-    vm.runInContext(bgCode, context, { filename: 'background.js' });
-
-    return { context, listeners, warnCalls, errorCalls, sentMessages, openOptionsPageCalls };
-}
+const { loadBackground } = require('./helpers/background-harness.js');
 
 function invokeMessage(listeners, message, sender) {
     let response;
@@ -121,7 +14,7 @@ function invokeMessage(listeners, message, sender) {
 
 describe('シームF: background 通知の防御性', () => {
     it('送信元タブ情報がない start_over は例外にせず未受理を返すこと', () => {
-        const { listeners, sentMessages } = loadBackgroundHarness();
+        const { listeners, sentMessages } = loadBackground();
 
         const { response, returnValue } = invokeMessage(
             listeners,
@@ -135,7 +28,7 @@ describe('シームF: background 通知の防御性', () => {
     });
 
     it('送信元タブIDが数値でない regenerate_with_context も未受理を返すこと', () => {
-        const { listeners, sentMessages } = loadBackgroundHarness();
+        const { listeners, sentMessages } = loadBackground();
 
         const { response } = invokeMessage(
             listeners,
@@ -148,7 +41,7 @@ describe('シームF: background 通知の防御性', () => {
     });
 
     it('メニュー未作成で contextMenus.update が失敗しても未処理の拒否にならないこと', async () => {
-        const { context, warnCalls } = loadBackgroundHarness({
+        const { context, warnCalls } = loadBackground({
             contextMenuUpdate: async () => {
                 throw new Error('Cannot update menu item: not found');
             }
@@ -162,7 +55,7 @@ describe('シームF: background 通知の防御性', () => {
     });
 
     it('contextMenus.update が同期的に throw しても未処理の拒否にならないこと', async () => {
-        const { context, warnCalls } = loadBackgroundHarness({
+        const { context, warnCalls } = loadBackground({
             contextMenuUpdate: () => {
                 throw new Error('Cannot update menu item: not found');
             }
@@ -173,7 +66,7 @@ describe('シームF: background 通知の防御性', () => {
     });
 
     it('エラー詳細が欠落した例外 (null) でも通知を送ること', async () => {
-        const { context, sentMessages, errorCalls } = loadBackgroundHarness({
+        const { context, sentMessages, errorCalls } = loadBackground({
             onShowInstructionDialog: async () => {
                 throw null;
             }
@@ -190,7 +83,7 @@ describe('シームF: background 通知の防御性', () => {
     });
 
     it('message を持たない例外オブジェクトでも通知を送ること', async () => {
-        const { context, sentMessages } = loadBackgroundHarness({
+        const { context, sentMessages } = loadBackground({
             onShowInstructionDialog: async () => {
                 throw { code: 'E_WITHOUT_MESSAGE' };
             }
@@ -205,7 +98,7 @@ describe('シームF: background 通知の防御性', () => {
     });
 
     it('429 応答はメッセージ文言に関係なく構造化種別 RATE_LIMIT で通知すること', async () => {
-        const { context, sentMessages } = loadBackgroundHarness({
+        const { context, sentMessages } = loadBackground({
             storageGet: async () => ({ geminiApiKey: 'dummy-key' })
         });
         context.__altAssistantRetryOverrides = { maxRetries: 0, baseDelay: 0 };
@@ -246,7 +139,7 @@ describe('シームG: iframe 宛てコンテキストメニューの配線', () 
     }
 
     it('右クリックされた iframe の frameId を生成プロセスへ渡すこと', async () => {
-        const { context, listeners } = loadBackgroundHarness();
+        const { context, listeners } = loadBackground();
         const calls = captureGenerationCalls(context);
 
         listeners.onClicked(
@@ -264,7 +157,7 @@ describe('シームG: iframe 宛てコンテキストメニューの配線', () 
     });
 
     it('数値のタブIDを持たない送信元では生成を開始しないこと', async () => {
-        const { context, listeners } = loadBackgroundHarness();
+        const { context, listeners } = loadBackground();
         const calls = captureGenerationCalls(context);
 
         listeners.onClicked(
@@ -277,7 +170,7 @@ describe('シームG: iframe 宛てコンテキストメニューの配線', () 
     });
 
     it('別メニュー項目のクリックでは生成を開始しないこと', async () => {
-        const { context, listeners } = loadBackgroundHarness();
+        const { context, listeners } = loadBackground();
         const calls = captureGenerationCalls(context);
 
         listeners.onClicked(
@@ -290,7 +183,7 @@ describe('シームG: iframe 宛てコンテキストメニューの配線', () 
     });
 
     it('ツールバーアイコンのクリックで設定画面を開くこと', () => {
-        const { listeners, openOptionsPageCalls } = loadBackgroundHarness();
+        const { listeners, openOptionsPageCalls } = loadBackground();
 
         listeners.actionOnClicked();
 

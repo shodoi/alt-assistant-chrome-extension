@@ -2,9 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
+const { loadBackground } = require('./helpers/background-harness.js');
 
 function createPngResponse() {
     return {
@@ -16,90 +14,17 @@ function createPngResponse() {
 }
 
 function loadBackgroundNetworkHarness({ geminiFetch, imageFetch, timeouts, retryOverrides } = {}) {
-    const rootDir = process.cwd();
-    const warnCalls = [];
-    const errorCalls = [];
-    const sentMessages = [];
-
-    const mockConsole = {
-        log: () => {},
-        info: () => {},
-        warn: (...args) => warnCalls.push(args),
-        error: (...args) => errorCalls.push(args)
-    };
-
-    const noopEvent = () => ({ addListener: () => {} });
-
-    const sandbox = {
-        console: mockConsole,
-        setTimeout,
-        clearTimeout,
-        URL,
-        Blob,
-        Response,
-        Headers,
-        AbortController,
-        atob: globalThis.atob,
-        btoa: globalThis.btoa,
-        createImageBitmap: async () => ({ width: 64, height: 64, close: () => {} }),
-        __altAssistantTimeouts: timeouts || { imageFetchMs: 80, geminiApiMs: 80 },
-        __altAssistantRetryOverrides: retryOverrides || { maxRetries: 3, baseDelay: 5, maxDelay: 20, jitter: false },
+    return loadBackground({
+        storageGet: async () => ({ geminiApiKey: 'test-key' }),
+        timeouts: timeouts || { imageFetchMs: 80, geminiApiMs: 80 },
+        retryOverrides: retryOverrides || { maxRetries: 3, baseDelay: 5, maxDelay: 20, jitter: false },
         fetch: async (url, init) => {
-            if (url.includes('generativelanguage.googleapis.com')) {
+            if (String(url).includes('generativelanguage.googleapis.com')) {
                 return geminiFetch(url, init);
             }
             return imageFetch ? imageFetch(url, init) : createPngResponse();
-        },
-        chrome: {
-            runtime: {
-                onInstalled: noopEvent(),
-                onStartup: noopEvent(),
-                onMessage: noopEvent(),
-                openOptionsPage: () => {}
-            },
-            storage: {
-                local: {
-                    get: async () => ({ geminiApiKey: 'test-key' }),
-                    remove: async () => {}
-                },
-                sync: { remove: async () => {} },
-                onChanged: noopEvent()
-            },
-            contextMenus: {
-                create: () => {},
-                update: () => {},
-                removeAll: (cb) => cb && cb(),
-                onClicked: noopEvent()
-            },
-            action: { onClicked: noopEvent() },
-            commands: { onCommand: noopEvent() },
-            scripting: { executeScript: async () => [] },
-            tabs: {
-                query: async () => [],
-                sendMessage: async (tabId, message, options) => {
-                    sentMessages.push({ tabId, message, options });
-                    if (message.action === 'ping') return { status: 'ok', pong: true };
-                    if (message.action === 'showInstructionDialog') return { prompt: 'この画像を説明してください' };
-                    return { ok: true };
-                }
-            }
         }
-    };
-
-    sandbox.self = sandbox;
-    sandbox.globalThis = sandbox;
-    sandbox.importScripts = (...relPaths) => {
-        for (const relPath of relPaths) {
-            const code = fs.readFileSync(path.resolve(rootDir, relPath), 'utf8');
-            vm.runInContext(code, context, { filename: relPath });
-        }
-    };
-
-    const context = vm.createContext(sandbox);
-    const bgCode = fs.readFileSync(path.resolve(rootDir, 'background.js'), 'utf8');
-    vm.runInContext(bgCode, context, { filename: 'background.js' });
-
-    return { context, warnCalls, errorCalls, sentMessages };
+    });
 }
 
 function assertErrorSent(sentMessages, expectedType, messagePattern) {

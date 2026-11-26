@@ -2,9 +2,6 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 
 const {
     MAX_HISTORY_ENTRIES,
@@ -18,33 +15,19 @@ const {
     createRegenerationPrompt
 } = require('../utils/input-history.js');
 
+const { loadBackground } = require('./helpers/background-harness.js');
+
 function loadBackgroundPromptHarness(overrides = {}) {
-    const rootDir = process.cwd();
-    const sentMessages = [];
     const geminiBodies = [];
     let showInstructionCalls = 0;
 
-    const noopEvent = () => ({ addListener: () => {} });
-    const mockConsole = { log: () => {}, info: () => {}, warn: () => {}, error: () => {} };
-
-    const sandbox = {
-        console: mockConsole,
-        setTimeout,
-        clearTimeout,
-        URL,
-        Blob,
-        Response,
-        Headers,
-        AbortController,
-        atob: globalThis.atob,
-        btoa: globalThis.btoa,
-        createImageBitmap: async () => ({ width: 64, height: 64, close: () => {} }),
-        __altAssistantTimeouts: { imageFetchMs: 100, geminiApiMs: 100 },
-        __altAssistantRetryOverrides: { maxRetries: 0, baseDelay: 1, maxDelay: 1, jitter: false },
+    const harness = loadBackground({
+        storageGet: async () => ({ geminiApiKey: 'test-key' }),
+        timeouts: { imageFetchMs: 100, geminiApiMs: 100 },
+        retryOverrides: { maxRetries: 0, baseDelay: 1, maxDelay: 1, jitter: false },
         fetch: async (url, init) => {
-            if (url.includes('generativelanguage.googleapis.com')) {
-                const parsed = JSON.parse(init.body);
-                geminiBodies.push(parsed);
+            if (String(url).includes('generativelanguage.googleapis.com')) {
+                geminiBodies.push(JSON.parse(init.body));
                 return {
                     ok: true,
                     status: 200,
@@ -60,58 +43,15 @@ function loadBackgroundPromptHarness(overrides = {}) {
                 blob: async () => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], { type: 'image/png' })
             };
         },
-        chrome: {
-            runtime: {
-                onInstalled: noopEvent(),
-                onStartup: noopEvent(),
-                onMessage: noopEvent(),
-                openOptionsPage: () => {}
-            },
-            storage: {
-                local: { get: async () => ({ geminiApiKey: 'test-key' }), remove: async () => {} },
-                sync: { remove: async () => {} },
-                onChanged: noopEvent()
-            },
-            contextMenus: {
-                create: () => {},
-                update: () => {},
-                removeAll: (cb) => cb && cb(),
-                onClicked: noopEvent()
-            },
-            action: { onClicked: noopEvent() },
-            commands: { onCommand: noopEvent() },
-            scripting: { executeScript: async () => [] },
-            tabs: {
-                query: async () => [],
-                sendMessage: async (tabId, message, options) => {
-                    sentMessages.push({ tabId, message, options });
-                    if (message.action === 'ping') return { status: 'ok', pong: true };
-                    if (message.action === 'showInstructionDialog') {
-                        showInstructionCalls += 1;
-                        return { prompt: overrides.instructionPrompt ?? '初回指示' };
-                    }
-                    return { ok: true };
-                }
-            }
+        onShowInstructionDialog: async () => {
+            showInstructionCalls += 1;
+            return { prompt: overrides.instructionPrompt ?? '初回指示' };
         }
-    };
-
-    sandbox.self = sandbox;
-    sandbox.globalThis = sandbox;
-    sandbox.importScripts = (...relPaths) => {
-        for (const relPath of relPaths) {
-            const code = fs.readFileSync(path.resolve(rootDir, relPath), 'utf8');
-            vm.runInContext(code, context, { filename: relPath });
-        }
-    };
-
-    const context = vm.createContext(sandbox);
-    const bgCode = fs.readFileSync(path.resolve(rootDir, 'background.js'), 'utf8');
-    vm.runInContext(bgCode, context, { filename: 'background.js' });
+    });
 
     return {
-        context,
-        sentMessages,
+        context: harness.context,
+        sentMessages: harness.sentMessages,
         geminiBodies,
         getShowInstructionCalls: () => showInstructionCalls
     };

@@ -2,107 +2,11 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-
-function loadBackgroundHarness(overrides = {}) {
-    const rootDir = process.cwd();
-    const warnCalls = [];
-    const errorCalls = [];
-    const sentMessages = [];
-
-    const mockConsole = {
-        log: () => {},
-        info: () => {},
-        warn: (...args) => warnCalls.push(args),
-        error: (...args) => errorCalls.push(args)
-    };
-
-    const noopEvent = () => ({ addListener: () => {} });
-
-    const sandbox = {
-        console: mockConsole,
-        setTimeout,
-        clearTimeout,
-        URL,
-        Blob,
-        Response,
-        Headers,
-        atob: globalThis.atob,
-        btoa: globalThis.btoa,
-        createImageBitmap: async () => ({ width: 64, height: 64, close: () => {} }),
-        fetch: overrides.fetch || (async () => {
-            throw new Error('unexpected fetch');
-        }),
-        chrome: {
-            runtime: {
-                onInstalled: noopEvent(),
-                onStartup: noopEvent(),
-                onMessage: noopEvent(),
-                openOptionsPage: () => {}
-            },
-            storage: {
-                local: {
-                    get: overrides.storageGet || (async () => ({ geminiApiKey: '' })),
-                    remove: async () => {}
-                },
-                sync: {
-                    remove: async () => {}
-                },
-                onChanged: noopEvent()
-            },
-            contextMenus: {
-                create: () => {},
-                update: () => {},
-                removeAll: (cb) => cb && cb(),
-                onClicked: noopEvent()
-            },
-            action: { onClicked: noopEvent() },
-            commands: {
-                onCommand: noopEvent()
-            },
-            scripting: {
-                executeScript: async () => []
-            },
-            tabs: {
-                query: async () => [],
-                sendMessage: async (tabId, message, options) => {
-                    sentMessages.push({ tabId, message, options });
-                    if (message.action === 'ping') {
-                        return { status: 'ok', pong: true };
-                    }
-                    if (message.action === 'showInstructionDialog') {
-                        if (overrides.onShowInstructionDialog) {
-                            return overrides.onShowInstructionDialog();
-                        }
-                        return { prompt: 'この画像を説明してください' };
-                    }
-                    return { ok: true };
-                }
-            }
-        }
-    };
-
-    sandbox.self = sandbox;
-    sandbox.globalThis = sandbox;
-    sandbox.importScripts = (...relPaths) => {
-        for (const relPath of relPaths) {
-            const code = fs.readFileSync(path.resolve(rootDir, relPath), 'utf8');
-            vm.runInContext(code, context, { filename: relPath });
-        }
-    };
-
-    const context = vm.createContext(sandbox);
-    const bgCode = fs.readFileSync(path.resolve(rootDir, 'background.js'), 'utf8');
-    vm.runInContext(bgCode, context, { filename: 'background.js' });
-
-    return { context, warnCalls, errorCalls, sentMessages };
-}
+const { loadBackground } = require('./helpers/background-harness.js');
 
 describe('Service Worker エラーログ使い分け回帰テスト', () => {
     it('分類済みエラー (API_KEY_INVALID) では console.error を呼ばず console.warn を使うこと', async () => {
-        const { context, warnCalls, errorCalls, sentMessages } = loadBackgroundHarness({
+        const { context, warnCalls, errorCalls, sentMessages } = loadBackground({
             storageGet: async () => ({ geminiApiKey: '' }),
             fetch: async () => ({
                 ok: true,
@@ -122,7 +26,7 @@ describe('Service Worker エラーログ使い分け回帰テスト', () => {
     });
 
     it('分類済みエラー (UNSUPPORTED_IMAGE_FORMAT) では console.error を呼ばず console.warn を使うこと', async () => {
-        const { context, warnCalls, errorCalls, sentMessages } = loadBackgroundHarness({
+        const { context, warnCalls, errorCalls, sentMessages } = loadBackground({
             storageGet: async () => ({ geminiApiKey: 'dummy-key' }),
             fetch: async () => ({
                 ok: true,
@@ -142,7 +46,7 @@ describe('Service Worker エラーログ使い分け回帰テスト', () => {
     });
 
     it('未分類エラー (UNKNOWN) では console.error で記録すること', async () => {
-        const { context, errorCalls, sentMessages } = loadBackgroundHarness({
+        const { context, errorCalls, sentMessages } = loadBackground({
             onShowInstructionDialog: async () => {
                 throw new Error('Totally unexpected internal bug');
             }
